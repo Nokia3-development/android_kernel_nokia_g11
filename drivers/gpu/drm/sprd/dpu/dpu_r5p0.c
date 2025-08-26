@@ -2529,7 +2529,7 @@ static int dpu_capability(struct dpu_context *ctx,
 	if (!cap)
 		return -EINVAL;
 
-	cap->max_layers = 4;
+	cap->max_layers = 2;	//4	//Modify by pengzhenhua1@wingtech.com for SCP-4882 BSP ADD lcd on freq TEMP(2022.3.19)
 	cap->fmts_ptr = primary_fmts;
 	cap->fmts_cnt = ARRAY_SIZE(primary_fmts);
 
