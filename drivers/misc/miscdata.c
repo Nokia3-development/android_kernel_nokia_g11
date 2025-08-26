@@ -42,10 +42,22 @@ typedef enum{
 }wt_proinfo_type;
 
 #define MISCDATA_PATH "/dev/block/by-name/miscdata"//miscdata partition
+
+#ifdef TARGET_PRODUCT_MGK
+
+#define BASE_ADDR 1024*806
+#define OFFSET 1
+#define SIZE 13
+#define EMMC_BLOCK_LENGTH 512
+
+#else
+
 #define BASE_ADDR 1024*768//customer base addr.defined by sprd
 #define OFFSET 341//341-404 save the shutdown time when recovery factory setup
 #define SIZE 64//341-404 save the shutdown time when recovery factory setup
 #define EMMC_BLOCK_LENGTH 512//emmc read or write suggest
+
+#endif
 
 static int wt_proinfo_read(wt_proinfo_type type, char* buf);
 static int wt_proinfo_write(wt_proinfo_type type, const char* buf, int len);

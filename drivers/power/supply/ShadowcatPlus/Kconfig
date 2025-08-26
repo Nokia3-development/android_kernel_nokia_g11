@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: GPL-2.0-only
+menuconfig POWER_SUPPLY
+	bool "Power supply class support"
+	help
+	  Say Y here to enable power supply class support. This allows
+	  power supply (batteries, AC, USB) monitoring by userspace
+	  via sysfs and uevent (if available) and/or APM kernel interface
+	  (if selected below).
+
+if POWER_SUPPLY
+
+config POWER_SUPPLY_DEBUG
+	bool "Power supply debug"
+	help
+	  Say Y here to enable debugging messages for power supply class
+	  and drivers.
+
+config CHARGER_MANAGER
+	tristate "Battery charger manager for multiple chargers"
+	depends on REGULATOR
+	select EXTCON
+	help
+          Say Y to enable charger-manager support, which allows multiple
+          chargers attached to a battery and multiple batteries attached to a
+          system. The charger-manager also can monitor charging status in
+          runtime and in suspend-to-RAM by waking up the system periodically
+          with help of suspend_again support.
+
+config CHARGER_BQ25890
+	tristate "TI BQ25890 battery charger driver"
+	depends on I2C
+	depends on GPIOLIB || COMPILE_TEST
+	select REGMAP_I2C
+	help
+	  Say Y to enable support for the TI BQ25890 battery charger.
+
+config FUEL_GAUGE_SC27XX
+	tristate "Spreadtrum SC27XX fuel gauge driver"
+	depends on MFD_SC27XX_PMIC || MFD_UMP96XX_PMIC || COMPILE_TEST
+	depends on IIO
+	help
+	 Say Y here to enable support for fuel gauge with SC27XX
+	 PMIC chips.
+
+config FAST_CHARGER_SC2730
+	tristate "Spreadtrum SC2730 fast charger driver"
+	depends on MFD_SC27XX_PMIC || MFD_UMP96XX_PMIC || COMPILE_TEST
+	help
+	  Say Y here to enable support for fast charging with SC2730
+	  PMIC chips.
+
+endif # POWER_SUPPLY

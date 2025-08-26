@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * File:shub_core.c
  *
  * Copyright (C) 2015 Spreadtrum Communications Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  *
  */
 
@@ -21,49 +18,50 @@
 #include <linux/iio/trigger_consumer.h>
 #include <linux/kernel.h>
 #include <linux/kthread.h>
+#include <linux/ktime.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/pm_wakeup.h>
 #include <linux/sched.h>
-#include <linux/ktime.h>
-#include <linux/timekeeping.h>
-#include <uapi/linux/sched/types.h>
-#include <linux/soc/sprd/sprd_systimer.h>
-
-#include <linux/reboot.h>
 #include <linux/sipc.h>
 #include <linux/slab.h>
+#include <linux/soc/sprd/sprd_systimer.h>
 #include <linux/string.h>
 #include <linux/suspend.h>
 #include <linux/sysfs.h>
+#include <linux/timekeeping.h>
 #include <linux/uaccess.h>
+#include <uapi/linux/sched/types.h>
+#include <linux/reboot.h>
 
 #include "shub_common.h"
 #include "shub_core.h"
-#include "shub_protocol.h"
 #include "shub_opcode.h"
-#include <linux/pm_wakeup.h>
+#include "shub_protocol.h"
+#if defined(TARGET_PRODUCT_SCP) || defined(TARGET_PRODUCT_SCT)
 //added by chenweican@wingtech.com for SCT-702 BSP bringup sensor on 2021-08-24 begin
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
-// added by chenweican@wingtech.com for SCT-702 BSP bringup sensor on 2021-08-24 end
+//added by chenweican@wingtech.com for SCT-702 BSP bringup sensor on 2021-08-24 end
 //added by chenweican@wingtech.com for SCT-702 add sensor hardward infomation on 2021-08-26 begin
 #include <linux/hardware_info.h>
-
+#endif
 #define MAX_SENSOR_HANDLE 200
 static u8 sensor_status[MAX_SENSOR_HANDLE];
 
+static int reader_flag;
 static struct task_struct *thread;
 static struct task_struct *thread_nwu;
+static struct shub_data_processor shub_stream_processor;
+static struct shub_data_processor shub_stream_processor_nwu;
 static DECLARE_WAIT_QUEUE_HEAD(waiter);
-static int reader_flag;
-struct shub_data *g_sensor;
-static struct wakeup_source sensorhub_wake_lock;
+static struct wakeup_source *sensorhub_wake_lock;
 static u32 sensorhub_version;
+#if defined(TARGET_PRODUCT_SCP) || defined(TARGET_PRODUCT_SCT)
 //added by chenweican@wingtech.com for SCT-702 BSP bringup sensor on 2021-08-24 begin
 static uint32_t gpio;
-extern int capsensor_set_batch_ext(int id);
-extern int capsensor_set_enable_ext(int id, int enable);
 //added by chenweican@wingtech.com for SCT-702 BSP bringup sensor on 2021-08-24 end
+#endif
 #if SHUB_DATA_DUMP
 #define MAX_RX_LEN 102400
 static int total_read_byte_cnt;
@@ -74,16 +72,16 @@ static int flush_setcnt;
 static int flush_getcnt;
 /* sensor id */
 static struct hw_sensor_id_tag hw_sensor_id[_HW_SENSOR_TOTAL] = {
-	{0, 0xFF, 0xFF, ""},
-	{0, 0xFF, 0xFF, ""},
-	{0, 0xFF, 0xFF, ""},
-	{0, 0xFF, 0xFF, ""},
-	{0, 0xFF, 0xFF, ""},
-	{0, 0xFF, 0xFF, ""},
-	{0, 0xFF, 0xFF, ""},
+	{0, 0xFF, 0xFF, 0, ""},
+	{0, 0xFF, 0xFF, 0, ""},
+	{0, 0xFF, 0xFF, 0, ""},
+	{0, 0xFF, 0xFF, 0, ""},
+	{0, 0xFF, 0xFF, 0, ""},
+	{0, 0xFF, 0xFF, 0, ""},
+	{0, 0xFF, 0xFF, 0, ""},
 };
 
-const char calibration_filename[SENSOR_ID_END][CALIB_PATH_MAX_LENG] = {
+static const char calibration_filename[SENSOR_ID_END][CALIB_PATH_MAX_LENG] = {
 	"none",
 	"acc",
 	"mag",
@@ -97,10 +95,8 @@ const char calibration_filename[SENSOR_ID_END][CALIB_PATH_MAX_LENG] = {
 };
 
 static int debug_flag;
+struct shub_data *g_sensor;
 static int shub_send_event_to_iio(struct shub_data *sensor, u8 *data, u16 len);
-static int shub_download_calibration_data(struct shub_data *sensor, int sensor_type);
-static int shub_download_all_calibration_data(struct shub_data *sensor);
-static void shub_save_calibration_data(struct work_struct *work);
 static void shub_synctimestamp(struct shub_data *sensor);
 
 #define MAX_COMPATIBLE_SENSORS 6
@@ -113,13 +109,21 @@ static char *prox_firms[MAX_COMPATIBLE_SENSORS];
 static char *pressure_firms[MAX_COMPATIBLE_SENSORS];
 static char *color_temp_firms[MAX_COMPATIBLE_SENSORS];
 module_param(sensor_fusion_mode, uint, 0644);
-module_param_array(acc_firms, charp, 0, 0644);
-module_param_array(gryo_firms, charp, 0, 0644);
-module_param_array(mag_firms, charp, 0, 0644);
-module_param_array(light_firms, charp, 0, 0644);
-module_param_array(prox_firms, charp, 0, 0644);
-module_param_array(pressure_firms, charp, 0, 0644);
-module_param_array(color_temp_firms, charp, 0, 0644);
+module_param_array(acc_firms, charp, NULL, 0644);
+module_param_array(gryo_firms, charp, NULL, 0644);
+module_param_array(mag_firms, charp, NULL, 0644);
+module_param_array(light_firms, charp, NULL, 0644);
+module_param_array(prox_firms, charp, NULL, 0644);
+module_param_array(pressure_firms, charp, NULL, 0644);
+module_param_array(color_temp_firms, charp, NULL, 0644);
+
+static char acc_cali_data[CALIBRATION_DATA_LENGTH];
+static char mag_cali_data[CALIBRATION_DATA_LENGTH];
+static char gyro_cali_data[CALIBRATION_DATA_LENGTH];
+static char light_cali_data[CALIBRATION_DATA_LENGTH];
+static char proximity_cali_data[CALIBRATION_DATA_LENGTH];
+static char colortemp_cali_data[CALIBRATION_DATA_LENGTH];
+
 struct sensor_cali_info {
 	unsigned char size;
 	void *data;
@@ -133,7 +137,9 @@ static struct sensor_cali_info prox_cali_info;
 static struct sensor_cali_info pressure_cali_info;
 static struct sensor_cali_info color_temp_cali_info;
 
-static void get_sensor_info(char **sensor_name, int sensor_type, int success_num)
+static void get_sensor_info(char **sensor_name,
+			    int sensor_type,
+			    int success_num)
 {
 	int i, now_order = 0;
 	int show_info_order[_HW_SENSOR_TOTAL] = {ORDER_ACC, ORDER_MAG,
@@ -147,9 +153,15 @@ static void get_sensor_info(char **sensor_name, int sensor_type, int success_num
 			break;
 		}
 	}
+	if (i == _HW_SENSOR_TOTAL) {
+		dev_err(&g_sensor->sensor_pdev->dev, "%s invalid sensortype %d\n",
+			__func__, sensor_type);
+		return;
+	}
 
+	hw_sensor_id[now_order].sensor_type = sensor_type;
 	memcpy(hw_sensor_id[now_order].pname, sensor_name[success_num],
-					strlen(sensor_name[success_num]));
+	       strlen(sensor_name[success_num]));
 	hw_sensor_id[now_order].id_status = _IDSTA_OK;
 }
 
@@ -394,6 +406,7 @@ static void shub_data_callback(struct shub_data *sensor, u8 *data, u32 len)
 #if SHUB_DATA_DUMP
 		flush_getcnt++;
 #endif
+		/* FALLTHRU */
 	case HAL_SEN_DATA:
 /*		for(i = 0;i < len;i++)
  *			pr_info("len=%d,data[%d]=%d\n",len,i,data[i]);
@@ -460,142 +473,89 @@ static void parse_cmd_response_callback(struct shub_data *sensor,
 	}
 }
 
-static int get_file_size(struct file *f)
-{
-	int error;
-	struct kstat stat;
-
-	error = vfs_getattr(&f->f_path, &stat, STATX_SIZE,
-			    AT_STATX_SYNC_AS_STAT);
-
-	if (error) {
-		pr_err("get conf file stat error\n");
-		return error;
-	}
-	return stat.size;
-}
-
 static void request_send_firmware(struct shub_data *sensor,
 				  char **sensor_firms,
 				  int sensor_type,
 				  struct sensor_cali_info *cali_info)
 {
+	const struct firmware *fw_opcode;
+	const struct firmware *fw_cali;
 	struct fwshub_head *fw_head = NULL;
-	char *cali_data;
-	char *fw_data;
+	const char *fw_data;
 	struct iic_unit *fw_body = NULL;
 	char firmware_name[128];
-	int i, size;
+	int opcode_download_count;
+	int i;
 	int ret;
 	int success = 0;
-	int opcode_download_count;
-	struct file *file;
-	loff_t *pos;
 
 	dev_info(&sensor->sensor_pdev->dev,
 		 "%s sensor_type = %d start\n", __func__, sensor_type);
 	for (i = 0; i < MAX_COMPATIBLE_SENSORS; i++) {
-		if (!sensor_firms[i])
-			break;
-
-		if (strlen(sensor_firms[i]) == 0)
-			break;
 		dev_info(&sensor->sensor_pdev->dev,
 			 "try compatible sensor: %s\n", sensor_firms[i]);
-		sprintf(firmware_name, "/mnt/vendor/sensorhub/shub_fw_%s_cali",
-			sensor_firms[i]);
-		dev_info(&sensor->sensor_pdev->dev,
-			 "fw path: %s\n", firmware_name);
-
-		file = filp_open(firmware_name, O_RDONLY, 0);
-		if (IS_ERR(file)) {
-			dev_warn(&sensor->sensor_pdev->dev, "open fw failed!\n");
+		if (!sensor_firms[i])
+			break;
+		sprintf(firmware_name, "shub_fw_%s_cali", sensor_firms[i]);
+		ret = request_firmware(&fw_cali, firmware_name,
+				       &sensor->sensor_pdev->dev);
+		if (ret) {
+			dev_err(&sensor->sensor_pdev->dev,
+				"Failed to load firmware cali: %s, %d\n",
+				firmware_name, ret);
 			continue;
 		}
-
-		size = get_file_size(file);
-		if (size <= 0) {
-			dev_warn(&sensor->sensor_pdev->dev,
-				 "load file:%s error\n", firmware_name);
-			filp_close(file, NULL);
-			continue;
-		}
-
-		cali_data = kzalloc(size + 1, GFP_KERNEL);
-		if (!cali_data) {
-			filp_close(file, NULL);
-			continue;
-		}
-		pos = &file->f_pos;
-		kernel_read(file, cali_data, size, pos);
-
-		cali_info->data = kmalloc(size, GFP_KERNEL);
+		cali_info->size = fw_cali->size;
+		cali_info->data = kmemdup(fw_cali->data, cali_info->size,
+					  GFP_KERNEL);
 		if (!cali_info->data) {
-			filp_close(file, NULL);
-			kfree(cali_data);
+			dev_err(&sensor->sensor_pdev->dev,
+				"kmalloc cali_info data %d failed\n",
+				cali_info->size);
+			release_firmware(fw_cali);
 			continue;
 		}
-		cali_info->size = size;
-		memcpy(cali_info->data, cali_data, size);
-		kfree(cali_data);
-		filp_close(file, NULL);
+		dev_info(&sensor->sensor_pdev->dev, "cali info %p, size = %d\n",
+			 cali_info->data, cali_info->size);
 
-		sprintf(firmware_name, "/mnt/vendor/sensorhub/shub_fw_%s",
-			sensor_firms[i]);
-		file = filp_open(firmware_name, O_RDONLY, 0);
-		if (IS_ERR(file)) {
-			kfree(cali_info->data);
-			cali_info->size = 0;
-			continue;
-		}
+		release_firmware(fw_cali);
 
-		size = get_file_size(file);
-		if (size <= 0) {
-			dev_warn(&sensor->sensor_pdev->dev,
-				 "load file:%s error\n", firmware_name);
-			filp_close(file, NULL);
-			kfree(cali_info->data);
-			cali_info->size = 0;
+		sprintf(firmware_name, "shub_fw_%s", sensor_firms[i]);
+		ret = request_firmware(&fw_opcode, firmware_name,
+				       &sensor->sensor_pdev->dev);
+		if (ret) {
+			dev_err(&sensor->sensor_pdev->dev,
+				"Failed to load firmware opcode %s, %d\n",
+				firmware_name, ret);
 			continue;
 		}
 
-		pos = &file->f_pos;
-		fw_data = kzalloc(size + 1, GFP_KERNEL);
-		if (!fw_data) {
-			dev_warn(&sensor->sensor_pdev->dev,
-				 "kmalloc fw_data failed\n");
-			filp_close(file, NULL);
-			kfree(cali_info->data);
-			cali_info->size = 0;
-			continue;
-		}
-		kernel_read(file, (void __user *)fw_data, size, pos);
-		filp_close(file, NULL);
+		dev_info(&sensor->sensor_pdev->dev,
+			 "opcode size = %u\n", (unsigned int)fw_opcode->size);
 
+		fw_data = fw_opcode->data;
 		fw_head = (struct fwshub_head *)fw_data;
 		fw_body = (struct iic_unit *)(fw_data +
-			sizeof(struct fwshub_head));
+					      sizeof(struct fwshub_head));
 
 		opcode_download_count = 0;
 		do {
 			if (opcode_download_count)
 				msleep(200);
 			ret = shub_send_command(sensor, sensor_type,
-					SHUB_DOWNLOAD_OPCODE_SUBTYPE, fw_data,
-					size);
+						SHUB_DOWNLOAD_OPCODE_SUBTYPE,
+						fw_opcode->data,
+						fw_opcode->size);
 			opcode_download_count++;
 		} while (ret == RESPONSE_TIMEOUT &&
 			opcode_download_count < 10);
 
+		release_firmware(fw_opcode);
 		if (ret) {
 			dev_err(&sensor->sensor_pdev->dev,
 				"Failed to init sensor, ret = %d\n", ret);
-			kfree(fw_data);
-			kfree(cali_info->data);
-			cali_info->size = 0;
 			continue;
 		}
-		kfree(fw_data);
 		get_sensor_info(sensor_firms, sensor_type, i);
 		dev_info(&sensor->sensor_pdev->dev, "init sensor success\n");
 		success = 1;
@@ -603,6 +563,9 @@ static void request_send_firmware(struct shub_data *sensor,
 	}
 	if (!success)
 		dev_err(&sensor->sensor_pdev->dev, "%s failed\n", __func__);
+
+	dev_info(&sensor->sensor_pdev->dev,
+		 "%s sensor_type = %d end\n", __func__, sensor_type);
 }
 
 static int shub_download_opcode(struct shub_data *sensor)
@@ -642,7 +605,7 @@ static int shub_download_opcode(struct shub_data *sensor)
 			      SENSOR_COLOR_TEMP, &color_temp_cali_info);
 	msleep(200);
 
-	cali_data_size = 8 * sizeof(unsigned char);
+	cali_data_size = (_HW_SENSOR_TOTAL + 1) * sizeof(unsigned char);
 	cali_data_size += acc_cali_info.size;
 	cali_data_size += gyro_cali_info.size;
 	cali_data_size += mag_cali_info.size;
@@ -885,7 +848,7 @@ static ssize_t debug_data_show(struct device *dev,
 	struct shub_data *sensor = dev_get_drvdata(dev);
 
 	dev_info(&sensor->sensor_pdev->dev, "total_read_byte_cnt =%d\n",
-		total_read_byte_cnt);
+		 total_read_byte_cnt);
 	total_read_byte_cnt = 0;
 	memset(sipc_rx_data, 0, sizeof(sipc_rx_data));
 	return sprintf(buf, "total_read_byte_cnt=%d\n", total_read_byte_cnt);
@@ -924,69 +887,60 @@ static ssize_t reader_enable_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(reader_enable);
 
-static void shub_download_calibration_data_work(struct work_struct *work)
-{
-	struct shub_data *sensor = container_of(work,
-		struct shub_data, download_cali_data_work);
-
-	if (sensor->mcu_mode == SHUB_NORMAL) {
-		shub_download_all_calibration_data(sensor);
-	}
-}
-
 static ssize_t op_download_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct shub_data *sensor = dev_get_drvdata(dev);
 	u8 data[4];
 	u32 version = 0, i;
+        #if defined(TARGET_PRODUCT_SCP) || defined(TARGET_PRODUCT_SCT)
 	//added by chenweican@wingtech.com for SCT-702 add sensor hardward infomation on 2021-08-26 begin
     	char firmware_ver[HARDWARE_MAX_ITEM_LONGTH];
-
+	#endif
 	for (i = 0; i < 15; i++) {
 		if (sensor->mcu_mode == SHUB_BOOT) {
-			if (shub_sipc_read(sensor,
-				SHUB_GET_FWVERSION_SUBTYPE,
-				data, 4) >= 0) {
+			if (shub_sipc_read(sensor, SHUB_GET_FWVERSION_SUBTYPE,
+					   data, 4) >= 0) {
 				sensor->mcu_mode = SHUB_OPDOWNLOAD;
 				memcpy(&version, data, sizeof(version));
 				sensorhub_version = version;
 				dev_info(&sensor->sensor_pdev->dev, "CM4 Version:%u\n",
-					version);
+					 version);
 				break;
-			} else {
-				dev_warn(&sensor->sensor_pdev->dev,
-					"Get Version Fail retry %d times\n", i + 1);
-				msleep(1000);
-				continue;
 			}
+			dev_warn(&sensor->sensor_pdev->dev,
+				 "Get Version Fail retry %d times\n", i + 1);
+			msleep(1000);
+			continue;
 		}
 	}
 	if (i == 15) {
-		dev_err(&sensor->sensor_pdev->dev, "Get Version Fail, cm4 or hub is not up.\n");
+		dev_err(&sensor->sensor_pdev->dev,
+			"Get Version Fail, cm4 or hub is not up.\n");
 		return sprintf(buf, "%u\n", version);
 	}
 
 	if (sensor->mcu_mode == SHUB_OPDOWNLOAD) {
 		shub_download_opcodefile(sensor);
 		sensor->mcu_mode = SHUB_NORMAL;
-		schedule_work(&sensor->download_cali_data_work);
 		/* start time sync */
 		cancel_delayed_work_sync(&sensor->time_sync_work);
 		queue_delayed_work(sensor->driver_wq,
 				   &sensor->time_sync_work, 0);
+		#if defined(TARGET_PRODUCT_SCP) || defined(TARGET_PRODUCT_SCT)
 		//added by chenweican@wingtech.com for SCT-702 add sensor hardward infomation on 2021-08-26 begin
 		for (i = 0; i < _HW_SENSOR_TOTAL;i++)
 	    		if (hw_sensor_id[i].id_status == _IDSTA_OK) {
                 		if (strstr(hw_sensor_id[i].pname, "accel")) {
                     			snprintf(firmware_ver, HARDWARE_MAX_ITEM_LONGTH, hw_sensor_id[i].pname + 14);
-                    			hardwareinfo_set_prop(HARDWARE_ACCELEROMETER,firmware_ver);
+                    			//hardwareinfo_set_prop(HARDWARE_ACCELEROMETER,firmware_ver);
                 		} else if (strstr(hw_sensor_id[i].pname, "light")) {
                    			 snprintf(firmware_ver, HARDWARE_MAX_ITEM_LONGTH, hw_sensor_id[i].pname + 6);
-                    			hardwareinfo_set_prop(HARDWARE_ALSPS,firmware_ver);
+                    			//hardwareinfo_set_prop(HARDWARE_ALSPS,firmware_ver);
                 		}
            	 	}
-	      //added by chenweican@wingtech.com for SCT-702 add sensor hardward infomation on 2021-08-26 end
+	        //added by chenweican@wingtech.com for SCT-702 add sensor hardward infomation on 2021-08-26 end
+		#endif
 	}
 
 	return sprintf(buf, "%u\n", version);
@@ -1057,31 +1011,27 @@ static ssize_t logctl_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(logctl);
 
-static int check_proximity_cali_data(void *cali_data)
+static int check_proximity_cali_data(struct shub_data *sensor)
 {
 	struct prox_cali_data prox_cali;
-	struct shub_data *sensor = container_of(cali_data, struct shub_data,
-		calibrated_data);
 
-	memcpy(&prox_cali, cali_data, sizeof(prox_cali));
+	memcpy(&prox_cali, sensor->cali_store.udata, sizeof(prox_cali));
 
 	dev_info(&sensor->sensor_pdev->dev,
-		"ground_noise = %d; high_thrd = %d; low_thrd = %d; cali_flag = %d\n",
-		prox_cali.ground_noise,
-		prox_cali.high_threshold,
-		prox_cali.low_threshold,
-		prox_cali.cali_flag);
-/* prox sensor factory auto calibration */
+		 "ground_noise = %d; high_thrd = %d; low_thrd = %d; cali_flag = %d\n",
+		 prox_cali.ground_noise, prox_cali.high_threshold,
+		 prox_cali.low_threshold, prox_cali.cali_flag);
+	/* prox sensor factory auto calibration */
 	if ((prox_cali.cali_flag & 0x01) == 0x01 &&
-		prox_cali.ground_noise < PROX_SENSOR_MIN_VALUE) {
+	    prox_cali.ground_noise < PROX_SENSOR_MIN_VALUE) {
 		dev_err(&sensor->sensor_pdev->dev,
 			"prox sensor auto cali out of minrange failed!\n");
 		return CALIB_STATUS_OUT_OF_MINRANGE;
 	}
 
-/* prox sensor factory manual calibration */
+	/* prox sensor factory manual calibration */
 	if ((prox_cali.cali_flag & 0x06) == 0x06 &&
-		prox_cali.high_threshold < prox_cali.low_threshold) {
+	    prox_cali.high_threshold < prox_cali.low_threshold) {
 		dev_err(&sensor->sensor_pdev->dev,
 			"prox sensor cali failed! the high_thrd < low_thrd!\n");
 		return -EINVAL;
@@ -1090,23 +1040,21 @@ static int check_proximity_cali_data(void *cali_data)
 	return 0;
 }
 
-static int check_acc_cali_data(void *cali_data)
+static int check_acc_cali_data(struct shub_data *sensor)
 {
-	struct acc_gyro_cali_data acc_cali;
-	struct shub_data *sensor = container_of(cali_data, struct shub_data,
-		calibrated_data);
+	struct acc_gyro_cali_data acc_cali_data;
 
-	memcpy(&acc_cali, cali_data, sizeof(acc_cali));
+	memcpy(&acc_cali_data, sensor->cali_store.udata, sizeof(acc_cali_data));
 
 	dev_info(&sensor->sensor_pdev->dev,
-		"acc_cali x_bias = %d; y_bias = %d; z_bias = %d\n",
-		acc_cali.x_bias,
-		acc_cali.y_bias,
-		acc_cali.z_bias);
+		 "x_bias = %d; y_bias = %d; z_bias = %d\n",
+		 acc_cali_data.x_bias,
+		 acc_cali_data.y_bias,
+		 acc_cali_data.z_bias);
 
-	if (abs(acc_cali.x_bias) > ACC_MAX_X_Y_BIAS_VALUE ||
-		abs(acc_cali.y_bias) > ACC_MAX_X_Y_BIAS_VALUE ||
-		abs(acc_cali.z_bias) > ACC_MAX_Z_BIAS_VALUE) {
+	if (abs(acc_cali_data.x_bias) > ACC_MAX_X_Y_BIAS_VALUE ||
+	    abs(acc_cali_data.y_bias) > ACC_MAX_X_Y_BIAS_VALUE ||
+	    abs(acc_cali_data.z_bias) > ACC_MAX_Z_BIAS_VALUE) {
 		dev_err(&sensor->sensor_pdev->dev,
 			"acc sensor cali failed! the bias is too big!\n");
 		return -EINVAL;
@@ -1115,23 +1063,21 @@ static int check_acc_cali_data(void *cali_data)
 	return 0;
 }
 
-static int check_gyro_cali_data(void *cali_data)
+static int check_gyro_cali_data(struct shub_data *sensor)
 {
 	struct acc_gyro_cali_data gyro_cali;
-	struct shub_data *sensor = container_of(cali_data, struct shub_data,
-		calibrated_data);
 
-	memcpy(&gyro_cali, cali_data, sizeof(gyro_cali));
+	memcpy(&gyro_cali, sensor->cali_store.udata, sizeof(gyro_cali));
 
 	dev_info(&sensor->sensor_pdev->dev,
-		"gyro_cali x_bias = %d; y_bias = %d; z_bias = %d\n",
-		gyro_cali.x_bias,
-		gyro_cali.y_bias,
-		gyro_cali.z_bias);
+		 "gyro_cali x_bias = %d; y_bias = %d; z_bias = %d\n",
+		 gyro_cali.x_bias,
+		 gyro_cali.y_bias,
+		 gyro_cali.z_bias);
 
 	if (abs(gyro_cali.x_bias) > GYRO_MAX_X_Y_Z_BIAS_VALUE ||
-		abs(gyro_cali.y_bias) > GYRO_MAX_X_Y_Z_BIAS_VALUE ||
-		abs(gyro_cali.z_bias) > GYRO_MAX_X_Y_Z_BIAS_VALUE) {
+	    abs(gyro_cali.y_bias) > GYRO_MAX_X_Y_Z_BIAS_VALUE ||
+	    abs(gyro_cali.z_bias) > GYRO_MAX_X_Y_Z_BIAS_VALUE) {
 		dev_err(&sensor->sensor_pdev->dev,
 			"gyro sensor cali failed! the bias is too big!\n");
 		return -EINVAL;
@@ -1140,184 +1086,39 @@ static int check_gyro_cali_data(void *cali_data)
 	return 0;
 }
 
-/**
- * return 0:success
- * return < 0:fail
- */
-static void shub_save_calibration_data(struct work_struct *work)
+static int check_cali_data(struct shub_data *sensor)
 {
-	int err = 0, nwrite = 0;
-	struct file *pfile = NULL;
-	char file_path[CALIB_PATH_MAX_LENG];
-	struct shub_data *sensor = container_of(work,
-		struct shub_data, savecalifile_work);
+	int err = 0;
 
 	switch (sensor->cal_id) {
 	case SENSOR_ACCELEROMETER:
-		err = check_acc_cali_data(sensor->calibrated_data);
+		err = check_acc_cali_data(sensor);
 		break;
 	case SENSOR_GYROSCOPE:
-		err = check_gyro_cali_data(sensor->calibrated_data);
+		err = check_gyro_cali_data(sensor);
 		break;
 	case SENSOR_PROXIMITY:
-		err = check_proximity_cali_data(sensor->calibrated_data);
+		err = check_proximity_cali_data(sensor);
 		break;
 	default:
 		break;
 	}
 
-	if (err < 0) {
-		sensor->cal_savests = err;
-		shub_download_calibration_data(sensor, sensor->cal_id);
-		return;
-	}
-
-	if ((strlen(CALIBRATION_NODE) +
-	     strlen(calibration_filename[sensor->cal_id])) >
-	    (sizeof(file_path) - 1)) {
-		dev_err(&sensor->sensor_pdev->dev,
-			"calibration node path is oversize.\n");
-		return;
-	}
-	snprintf(file_path, sizeof(file_path), "%s%s",
-		 CALIBRATION_NODE, calibration_filename[sensor->cal_id]);
-	dev_info(&sensor->sensor_pdev->dev,
-		 "sensor_id=%d,file_path=%s\n", sensor->cal_id, file_path);
-	pfile = filp_open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-	if (IS_ERR(pfile)) {
-		err = PTR_ERR(pfile);
-		dev_err(&sensor->sensor_pdev->dev,
-			"open file %s error=%d\n", file_path, err);
-		sensor->cal_savests = err;
-		return;
-	}
-	nwrite = kernel_write(pfile, sensor->calibrated_data,
-			      CALIBRATION_DATA_LENGTH,
-			      &pfile->f_pos);
-	if (nwrite < 0) {
-		dev_err(&sensor->sensor_pdev->dev, "nwrite=%d\n", nwrite);
-		err = nwrite;
-		sensor->cal_savests = err;
-	} else {
-		sensor->cal_savests = 0;
-	}
-	if (pfile)
-		filp_close(pfile, NULL);
+	return err;
 }
 
+#define SENSOR_TYPE_MAGNETIC_FIELD 2
 static void shub_save_mag_offset(struct shub_data *sensor,
 				 u8 *data, u32 len)
 {
-	int err = 0, nwrite = 0;
-	struct file *pfile = NULL;
-	char file_path[CALIB_PATH_MAX_LENG];
+		dev_info(&sensor->sensor_pdev->dev, "%s %d\n", __func__, len);
+		sensor->cali_store.cmd = HAL_CALI_STORE;
+		sensor->cali_store.length = len;
+		sensor->cali_store.type = SENSOR_TYPE_MAGNETIC_FIELD;
+		memcpy(sensor->cali_store.udata, data, len);
 
-	if ((strlen(CALIBRATION_NODE) + strlen(calibration_filename[2])) >
-	    (sizeof(file_path) - 1)) {
-		dev_err(&sensor->sensor_pdev->dev,
-			"calibration node path is oversize.\n");
-		return;
-	}
-	snprintf(file_path, sizeof(file_path), "%s%s",
-		 CALIBRATION_NODE, calibration_filename[2]);
-	dev_info(&sensor->sensor_pdev->dev, "file_path=%s\n", file_path);
-	pfile = filp_open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-	if (IS_ERR(pfile)) {
-		err = PTR_ERR(pfile);
-		dev_err(&sensor->sensor_pdev->dev,
-			"open file %s error=%d\n", file_path, err);
-		return;
-	}
-	nwrite = kernel_write(pfile, (const char __user *)data,
-			      CALIBRATION_DATA_LENGTH,
-			      &pfile->f_pos);
-
-	if (nwrite < 0) {
-		dev_err(&sensor->sensor_pdev->dev, "nwrite=%d\n", nwrite);
-		err = nwrite;
-	}
-	if (pfile)
-		filp_close(pfile, NULL);
-}
-
-static int shub_download_all_calibration_data(struct shub_data *sensor)
-{
-	int sensor_type = 0, err = 0;
-
-	for (sensor_type = 0; sensor_type < 9; sensor_type++)
-		shub_download_calibration_data(sensor, sensor_type);
-
-	return err;
-}
-
-static int shub_download_calibration_data(struct shub_data *sensor, int sensor_type)
-{
-	int err = 0;
-	struct file *pfile = NULL;
-	char file_path[CALIB_PATH_MAX_LENG];
-	char raw_cali_data[CALIBRATION_DATA_LENGTH] =  {0};
-	int cal_file_size = CALIBRATION_DATA_LENGTH;
-	int j = 0;
-
-	if ((strlen(CALIBRATION_NODE) +
-	     strlen(calibration_filename[sensor_type])) >
-	    (sizeof(file_path) - 1)) {
-		dev_err(&sensor->sensor_pdev->dev,
-			"calibration node path is oversize.\n");
-		return err;
-	}
-	snprintf(file_path, sizeof(file_path), "%s%s",
-		 CALIBRATION_NODE, calibration_filename[sensor_type]);
-	dev_info(&sensor->sensor_pdev->dev,
-		 "sensor_id=%d file_path=%s\n", sensor_type, file_path);
-
-	pfile = filp_open(file_path, O_RDONLY, 0);
-	if (IS_ERR(pfile)) {
-		err = (int)PTR_ERR(pfile);
-		dev_info(&sensor->sensor_pdev->dev,
-			 "open file %s ret=%d\n", file_path, err);
-		goto send_calibration_data;
-	}
-
-	cal_file_size = get_file_size(pfile);
-	if (cal_file_size != CALIBRATION_DATA_LENGTH) {
-		dev_warn(&sensor->sensor_pdev->dev,
-			 "Unable to get file size:%s\n", file_path);
-		filp_close(pfile, NULL);
-		return err;
-	}
-	dev_info(&sensor->sensor_pdev->dev,
-		 "cal_file_size=%d\n", cal_file_size);
-
-	if (kernel_read(pfile, raw_cali_data,
-			cal_file_size, &pfile->f_pos) != cal_file_size) {
-		dev_err(&sensor->sensor_pdev->dev, "Error: file read failed\n");
-		filp_close(pfile, NULL);
-		return err;
-	} else {
-		filp_close(pfile, NULL);
-	}
-
-	/* for debug */
-	for (j = 0; j < cal_file_size; j++)
-		dev_info(&sensor->sensor_pdev->dev,
-			 "raw_cali_data[%d]=%d\n", j, raw_cali_data[j]);
-
-send_calibration_data:
-	err = shub_send_command(sensor, sensor_type,
-				SHUB_SET_CALIBRATION_DATA_SUBTYPE,
-				raw_cali_data, cal_file_size);
-
-	if (err < cal_file_size)
-		dev_err(&sensor->sensor_pdev->dev,
-			"%s download calibration data failed\n",
-			calibration_filename[sensor_type]);
-	else
-		dev_err(&sensor->sensor_pdev->dev,
-			"%s download calibration data success\n",
-			calibration_filename[sensor_type]);
-
-	return err;
+		shub_send_event_to_iio(sensor, (u8 *)&sensor->cali_store,
+				       sizeof(sensor->cali_store));
 }
 
 static ssize_t enable_store(struct device *dev,
@@ -1338,15 +1139,17 @@ static ssize_t enable_store(struct device *dev,
 	if (sscanf(buf, "%d %d\n", &handle, &enabled) != 2)
 		return -EINVAL;
 	dev_info(&sensor->sensor_pdev->dev,
-		"handle = %d, enabled = %d\n", handle, enabled);
-	////added by chenweican@wingtech.com for SCT-702 BSP bringup sensor on 2021-08-24 begin
-    	capsensor_set_enable_ext(handle, enabled);
-	//added by chenweican@wingtech.com for SCT-702 BSP bringup sensor on 2021-08-24 end
+		 "handle = %d, enabled = %d\n", handle, enabled);
+#if defined(TARGET_PRODUCT_SCP) || defined(TARGET_PRODUCT_SCT)
+	/* Modify by ye_qin for sar sensor on 20220515 begin */
+	if (sensor->sar.enable && (handle == SHUB_SAR_HANDLE))
+		sensor->sar.enable(enabled);
+	/* Modify by ye_qin for sar sensor on 20220515 end */
+#endif
 	subtype = (enabled == 0) ? SHUB_SET_DISABLE_SUBTYPE :
 		SHUB_SET_ENABLE_SUBTYPE;
 	if (shub_send_command(sensor, handle, subtype, NULL, 0) < 0)
 		dev_err(&sensor->sensor_pdev->dev, "Write SetEn/Disable fail\n");
-
 	if (handle < MAX_SENSOR_HANDLE && handle > 0)
 		sensor_status[handle] = enabled;
 
@@ -1364,7 +1167,7 @@ static ssize_t batch_store(struct device *dev, struct device_attribute *attr,
 	dev_info(&sensor->sensor_pdev->dev, "buf=%s\n", buf);
 	if (sensor->mcu_mode <= SHUB_OPDOWNLOAD) {
 		dev_info(&sensor->sensor_pdev->dev,
-			"mcu_mode == %d!\n",  sensor->mcu_mode);
+			 "mcu_mode == %d!\n",  sensor->mcu_mode);
 		return -EAGAIN;
 	}
 
@@ -1373,12 +1176,16 @@ static ssize_t batch_store(struct device *dev, struct device_attribute *attr,
 		   &batch_cmd.report_rate,
 		   &batch_cmd.batch_timeout) != 4)
 		return -EINVAL;
-	dev_info(&sensor->sensor_pdev->dev, "handle = %d, rate = %d, enabled = %d\n",
+	dev_info(&sensor->sensor_pdev->dev,
+		 "handle = %d, rate = %d, batch_latency = %lld\n",
 		 batch_cmd.handle,
-		 batch_cmd.report_rate, flag);
-	//added by chenweican@wingtech.com for SCT-702 BSP bringup sensor on 2021-08-24 begin
-	capsensor_set_batch_ext(batch_cmd.handle);
-	//added by chenweican@wingtech.com for SCT-702 BSP bringup sensor on 2021-08-24 end
+		 batch_cmd.report_rate, batch_cmd.batch_timeout);
+#if defined(TARGET_PRODUCT_SCP) || defined(TARGET_PRODUCT_SCT)
+	/* Modify by ye_qin for sar sensor on 20220515 begin */
+	if (sensor->sar.batch && (batch_cmd.handle == SHUB_SAR_HANDLE))
+		sensor->sar.batch();
+	/* Modify by ye_qin for sar sensor on 20220515 end */
+#endif
 	if (shub_send_command(sensor, batch_cmd.handle,
 			      SHUB_SET_BATCH_SUBTYPE,
 			      (char *)&batch_cmd.report_rate, 12) < 0)
@@ -1415,7 +1222,7 @@ static ssize_t flush_store(struct device *dev, struct device_attribute *attr,
 			      NULL, 0x00) < 0)
 		dev_err(&sensor->sensor_pdev->dev, " Fail\n");
 
-	__pm_wakeup_event(&(sensorhub_wake_lock), jiffies_to_msecs(200));
+	__pm_wakeup_event(sensorhub_wake_lock, jiffies_to_msecs(200));
 
 	return count;
 }
@@ -1437,10 +1244,10 @@ static int set_calib_cmd(struct shub_data *sensor, u8 cmd, u8 id,
 	memcpy(&data[2], &golden_value, sizeof(golden_value));
 	if (cmd == CALIB_EN) {
 		err = shub_send_command(sensor, id,
-			SHUB_DISABLE_CALI_RANGE_CHECK_SUBTYPE,
-			data, sizeof(data));
+					SHUB_DISABLE_CALI_RANGE_CHECK_SUBTYPE,
+					data, sizeof(data));
 		dev_info(&sensor->sensor_pdev->dev,
-			"disable cali range check, err = %d\n", err);
+			 "disable cali range check, err = %d\n", err);
 	}
 	err = shub_send_command(sensor, id,
 				SHUB_SET_CALIBRATION_CMD_SUBTYPE,
@@ -1474,38 +1281,17 @@ static ssize_t mcu_mode_store(struct device *dev, struct device_attribute *attr,
 static DEVICE_ATTR_RW(mcu_mode);
 
 static int shub_save_als_cali_data(struct shub_data *sensor,
-	u8 *data, u32 len)
+				   u8 *data, u32 len)
 {
-	int err;
-	struct file *pfile;
-	char file_path[CALIB_PATH_MAX_LENG];
+	sensor->cali_store.cmd = HAL_CALI_STORE;
+	sensor->cali_store.length = len;
+	sensor->cali_store.type = SENSOR_TYPE_LIGHT;
+	memcpy(sensor->cali_store.udata, data, len);
 
-	if ((strlen(CALIBRATION_NODE) + strlen(calibration_filename[5])) >
-	    (sizeof(file_path) - 1)) {
-		dev_err(&sensor->sensor_pdev->dev,
-			"calibration node path is oversize.\n");
-		return -EINVAL;
-	}
-	snprintf(file_path, sizeof(file_path), "%s%s",
-		 CALIBRATION_NODE, calibration_filename[5]);
-	pfile = filp_open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-	if (IS_ERR(pfile)) {
-		err = PTR_ERR(pfile);
-		pr_err("open file %s error=%d\n", file_path, err);
-		return err;
-	}
-	err = kernel_write(pfile, data,
-			      CALIBRATION_DATA_LENGTH,
-			      &pfile->f_pos);
-	if (err < 0)
-		pr_err("err=%d\n", err);
-	filp_close(pfile, NULL);
-	pr_debug("shub_save_als_cali_data end\n");
-
-	return err;
+	return 0;
 }
 
-static int set_als_calib_cmd(struct shub_data *sensor, u8 cmd, u8 id)
+static int set_als_calib_cmd(struct shub_data *sensor)
 {
 	int err, i, average_als, als_cali_coef, status;
 	u8 data[2];
@@ -1514,23 +1300,26 @@ static int set_als_calib_cmd(struct shub_data *sensor, u8 cmd, u8 id)
 	int light_sum = 0;
 
 	for (i = 0; i < LIGHT_CALI_DATA_COUNT; i++) {
-		err = shub_sipc_read(sensor,
-			     SHUB_GET_LIGHT_RAWDATA_SUBTYPE, data, sizeof(data));
+		err = shub_sipc_read(sensor, SHUB_GET_LIGHT_RAWDATA_SUBTYPE,
+				     data, sizeof(data));
 		if (err < 0) {
-			pr_err("read RegMapR_GetLightRawData failed!\n");
+			dev_err(&sensor->sensor_pdev->dev,
+				 "read RegMapR_GetLightRawData failed!\n");
 			return err;
 		}
 		/*sleep for light senor collect data every 100ms*/
 		msleep(100);
-		pr_debug("shub_sipc_read: ptr[0] = %d\n", ptr[0]);
+		dev_info(&sensor->sensor_pdev->dev,
+			 "shub_sipc_read: ptr[0] = %d\n", ptr[0]);
 		light_sum += ptr[0];
 	}
 	average_als = light_sum / LIGHT_CALI_DATA_COUNT;
-	pr_info("light sensor cali light_sum:%d, average_als = %d\n",
-		light_sum, average_als);
+	dev_info(&sensor->sensor_pdev->dev,
+		 "light sensor cali light_sum:%d, average_als = %d\n",
+		 light_sum, average_als);
 
 	if (average_als < LIGHT_SENSOR_MIN_VALUE ||
-		average_als > LIGHT_SENSOR_MAX_VALUE) {
+	    average_als > LIGHT_SENSOR_MAX_VALUE) {
 		als_cali_coef = CALIB_STATUS_FAIL;
 		status = CALIB_STATUS_FAIL;
 	} else {
@@ -1541,7 +1330,8 @@ static int set_als_calib_cmd(struct shub_data *sensor, u8 cmd, u8 id)
 
 	err = shub_save_als_cali_data(sensor, als_data, sizeof(als_data));
 	if (err < 0) {
-		pr_err("Save Light Sensor CalibratorData Fail\n");
+		dev_err(&sensor->sensor_pdev->dev,
+			 "Save Light Sensor CalibratorData Fail\n");
 		return err;
 	}
 
@@ -1549,96 +1339,34 @@ static int set_als_calib_cmd(struct shub_data *sensor, u8 cmd, u8 id)
 				SHUB_SET_CALIBRATION_DATA_SUBTYPE,
 				als_data, CALIBRATION_DATA_LENGTH);
 	if (err < 0) {
-		pr_err("Write Light Sensor CalibratorData Fail\n");
+		dev_err(&sensor->sensor_pdev->dev,
+			 "Write Light Sensor CalibratorData Fail\n");
 		return err;
 	}
-	pr_debug("Light Sensor Calibrator status = %d\n", status);
+	dev_info(&sensor->sensor_pdev->dev,
+		 "Light Sensor Calibrator status = %d\n", status);
 
 	return status;
 }
 
-static ssize_t light_sensor_calibrator_store(struct device *dev,
-				  struct device_attribute *attr,
-				  const char *buf, size_t count)
+static ssize_t light_sensor_calibrator_show(struct device *dev,
+					    struct device_attribute *attr,
+					    char *buf)
 {
 	struct shub_data *sensor = dev_get_drvdata(dev);
-	int err, len;
+	int als_calib_result;
 
-	if (sensor->mcu_mode <= SHUB_OPDOWNLOAD) {
-		pr_err("mcu_mode == SHUB_BOOT!\n");
-		return -EINVAL;
+	als_calib_result = set_als_calib_cmd(sensor);
+	dev_info(&sensor->sensor_pdev->dev,
+		 "%s light_calibration status: %d\n", __func__, als_calib_result);
+	if (als_calib_result == CALIB_STATUS_PASS &&
+	    sensor->cali_store.type == SENSOR_TYPE_LIGHT) {
+		memcpy(buf, sensor->cali_store.udata, CALIBRATION_DATA_LENGTH);
 	}
 
-	len = sscanf(buf, "%d %d\n", &sensor->cal_cmd, &sensor->cal_id);
-	if (len < 2)
-		return -EINVAL;
-	pr_debug("id:%d,type:%d\n", sensor->cal_cmd, sensor->cal_id);
-	if (sensor->cal_cmd != CALIB_DATA_WRITE ||
-		sensor->cal_id != SENSOR_TYPE_LIGHT) {
-		pr_err("light sensor cali cmd error\n");
-		return -EINVAL;
-	}
-
-	err = set_als_calib_cmd(sensor, sensor->cal_cmd, sensor->cal_id);
-	if (err < 0)
-		pr_err("light sensor cali Fail!\n");
-
-	return err < 0 ? err : count;
+	return als_calib_result < 0 ? -EINVAL : CALIBRATION_DATA_LENGTH;
 }
-
-static ssize_t light_sensor_calibrator_show(struct device *dev,
-				  struct device_attribute *attr, char *buf)
-{
-	int err, cali_data_coef;
-	int status = CALIB_STATUS_NON;
-	struct file *pfile;
-	char file_path[CALIB_PATH_MAX_LENG];
-	char *raw_cali_data = NULL;
-
-	if ((strlen(CALIBRATION_NODE) + strlen(calibration_filename[5])) >
-	    (sizeof(file_path) - 1)) {
-		pr_err("calibration node path is oversize.\n");
-		return -EINVAL;
-	}
-	snprintf(file_path, sizeof(file_path), "%s%s",
-		 CALIBRATION_NODE, calibration_filename[5]);
-
-	pfile = filp_open(file_path, O_RDONLY, 0);
-	if (IS_ERR(pfile)) {
-		err = PTR_ERR(pfile);
-		pr_err("open file %s ret=%d\n", file_path, err);
-		return sprintf(buf, "%d\n", status);
-	}
-
-	raw_cali_data = kmalloc(CALIBRATION_DATA_LENGTH, GFP_KERNEL);
-	if (raw_cali_data == NULL) {
-		filp_close(pfile, NULL);
-		return -ENOMEM;
-	}
-
-	err = kernel_read(pfile, raw_cali_data,
-			      CALIBRATION_DATA_LENGTH,
-			      &pfile->f_pos);
-	if (err < 0) {
-		pr_err("Error: file read failed\n");
-		kfree(raw_cali_data);
-		filp_close(pfile, NULL);
-		return err;
-	}
-
-	memcpy(&cali_data_coef, raw_cali_data, sizeof(cali_data_coef));
-	pr_info("cali_data_coef = %d\n", cali_data_coef);
-	if (cali_data_coef < 0)
-		status = CALIB_STATUS_FAIL;
-	else
-		status = CALIB_STATUS_PASS;
-
-	kfree(raw_cali_data);
-	filp_close(pfile, NULL);
-
-	return sprintf(buf, "%d\n", status);
-}
-static DEVICE_ATTR_RW(light_sensor_calibrator);
+static DEVICE_ATTR_RO(light_sensor_calibrator);
 
 static ssize_t calibrator_cmd_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
@@ -1670,7 +1398,8 @@ static ssize_t calibrator_cmd_store(struct device *dev,
 	err = set_calib_cmd(sensor, sensor->cal_cmd, sensor->cal_id,
 			    sensor->cal_type, sensor->golden_sample);
 	dev_info(&sensor->sensor_pdev->dev, "cmd:%d,id:%d,type:%d,golden:%d\n",
-		sensor->cal_cmd, sensor->cal_id, sensor->cal_type, sensor->golden_sample);
+		 sensor->cal_cmd, sensor->cal_id, sensor->cal_type,
+		 sensor->golden_sample);
 	if (err < 0)
 		dev_err(&sensor->sensor_pdev->dev, " Write Fail!\n");
 
@@ -1678,45 +1407,88 @@ static ssize_t calibrator_cmd_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(calibrator_cmd);
 
+static char *get_sensor_cali_data_ptr(int sensor_type)
+{
+	char *data = NULL;
+
+	switch (sensor_type) {
+	case SENSOR_ACCELEROMETER:
+		data = acc_cali_data;
+		break;
+	case SENSOR_GEOMAGNETIC_FIELD:
+		data = mag_cali_data;
+		break;
+	case SENSOR_GYROSCOPE:
+		data = gyro_cali_data;
+		break;
+	case SENSOR_LIGHT:
+		data = light_cali_data;
+		break;
+	case SENSOR_PROXIMITY:
+		data = proximity_cali_data;
+		break;
+	case SENSOR_COLOR_TEMP:
+		data = colortemp_cali_data;
+		break;
+	default:
+		break;
+	}
+
+	return data;
+}
+
 static ssize_t calibrator_data_show(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
 	struct shub_data *sensor = dev_get_drvdata(dev);
 	int err, i, n = 0;
+	char *cali_data_ptr;
 
 	if (sensor->mcu_mode <= SHUB_OPDOWNLOAD) {
 		dev_err(&sensor->sensor_pdev->dev, "mcu_mode == SHUB_BOOT!\n");
 		return -EINVAL;
 	}
 
+	memset(sensor->cali_store.udata, 0x00, CALIBRATION_DATA_LENGTH);
+
 	err = shub_sipc_read(sensor,
 			     SHUB_GET_CALIBRATION_DATA_SUBTYPE,
-			     sensor->calibrated_data, CALIBRATION_DATA_LENGTH);
+			     sensor->cali_store.udata, CALIBRATION_DATA_LENGTH);
 	if (err < 0) {
-		dev_err(&sensor->sensor_pdev->dev, " Read CalibratorData Fail\n");
+		dev_err(&sensor->sensor_pdev->dev, "Read Cali Data Fail\n");
 		return err;
 	}
 
 	dev_info(&sensor->sensor_pdev->dev, "cmd:%d,id:%d,type:%d\n",
-		sensor->cal_cmd, sensor->cal_id, sensor->cal_type);
+		 sensor->cal_cmd, sensor->cal_id, sensor->cal_type);
 	if (sensor->cal_cmd == CALIB_DATA_READ) {
-		/* debuginfor(cal_data,CALIBRATION_DATA_LENGTH); */
-		sensor->cal_savests = 1;
-		schedule_work(&sensor->savecalifile_work);
-		while (sensor->cal_savests == 1) {
-			msleep(100);
-			dev_info(&sensor->sensor_pdev->dev, "saving cali data...\n");
+		cali_data_ptr = get_sensor_cali_data_ptr(sensor->cal_id);
+		if (!cali_data_ptr) {
+			dev_err(&sensor->sensor_pdev->dev,
+				"Invalid calibrator_data read\n");
+			return 0;
 		}
-		/* 0 success ,else error */
-		err = sensor->cal_savests;
-		dev_info(&sensor->sensor_pdev->dev, "done err=%d\n", err);
-		return sprintf(buf, "%d\n", err);
+		if (check_cali_data(sensor) == 0) {
+			memcpy(buf, sensor->cali_store.udata, CALIBRATION_DATA_LENGTH);
+			memcpy(cali_data_ptr, sensor->cali_store.udata, CALIBRATION_DATA_LENGTH);
+			return CALIBRATION_DATA_LENGTH;
+		} else {
+			err = shub_send_command(sensor, sensor->cal_id,
+				SHUB_SET_CALIBRATION_DATA_SUBTYPE,
+				cali_data_ptr, CALIBRATION_DATA_LENGTH);
+			if (err < 0) {
+				dev_err(&sensor->sensor_pdev->dev,
+					"Write CalibratorData Fail\n");
+			}
+			buf[0] = '\0';
+		}
+		return 0;
 	}
 	if (sensor->cal_cmd == CALIB_CHECK_STATUS)
-		return sprintf(buf, "%d\n", sensor->calibrated_data[0]);
+		return sprintf(buf, "%d\n", sensor->cali_store.udata[0]);
 
 	for (i = 0; i < CALIBRATION_DATA_LENGTH; i++)
-		n += sprintf(buf + n, "%d ", sensor->calibrated_data[i]);
+		n += sprintf(buf + n, "%d ", sensor->cali_store.udata[i]);
 	return n;
 }
 
@@ -1725,29 +1497,37 @@ static ssize_t calibrator_data_store(struct device *dev,
 				     const char *buf, size_t count)
 {
 	struct shub_data *sensor = dev_get_drvdata(dev);
-	char data[CALIBRATION_DATA_LENGTH];
-	int i, err, temp, cr, offset = 0;
+	char *cali_data_ptr;
+	int sensor_type;
+	int err = -1;
 
-	if (sensor->mcu_mode <= SHUB_OPDOWNLOAD) {
-		dev_err(&sensor->sensor_pdev->dev, "mcu_mode == SHUB_BOOT!\n");
+	if (count < CALIBRATION_DATA_LENGTH + 1) {
+		dev_err(&sensor->sensor_pdev->dev,
+			"error! invalid calibration data, count=%lu\n", count);
 		return -EINVAL;
 	}
 
-	for (i = 0; i < CALIBRATION_DATA_LENGTH; i++) {
-		if (sscanf(buf + offset, "%d %n", &temp, &cr) != 1)
-			return -EINVAL;
-		data[i] = (unsigned char)temp;
-		offset += cr;
+	sensor_type = (int)buf[0];
+
+	cali_data_ptr = get_sensor_cali_data_ptr(sensor_type);
+
+	if (!cali_data_ptr) {
+		dev_err(&sensor->sensor_pdev->dev, "error! sensor_type=%d no cali data!\n",
+			sensor_type);
+		return -EINVAL;
 	}
-	err = shub_send_command(sensor, HANDLE_MAX,
+
+	memcpy(cali_data_ptr, &buf[1], CALIBRATION_DATA_LENGTH);
+
+	err = shub_send_command(sensor, sensor_type,
 				SHUB_SET_CALIBRATION_DATA_SUBTYPE,
-				data, sizeof(data));
+				cali_data_ptr, CALIBRATION_DATA_LENGTH);
 	if (err < 0) {
 		dev_err(&sensor->sensor_pdev->dev, "Write CalibratorData Fail\n");
 		return err;
 	}
 
-	return count;
+	return (CALIBRATION_DATA_LENGTH + 1);
 }
 static DEVICE_ATTR_RW(calibrator_data);
 
@@ -1777,8 +1557,8 @@ static ssize_t version_show(struct device *dev, struct device_attribute *attr,
 static DEVICE_ATTR_RO(version);
 
 static ssize_t als_mode_store(struct device *dev,
-				 struct device_attribute *attr,
-				 const char *buf, size_t count)
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
 {
 	u8 als_mode;
 	int err;
@@ -1798,7 +1578,7 @@ static ssize_t als_mode_store(struct device *dev,
 }
 static DEVICE_ATTR_WO(als_mode);
 
-void get_dynamic_data(struct shub_data *sensor)
+static void get_dynamic_data(struct shub_data *sensor)
 {
 	int i;
 	u8 data[30], type, len;
@@ -1831,16 +1611,15 @@ static ssize_t data_to_dynamic_store(struct device *dev,
 	err = shub_send_command(sensor, HANDLE_MAX,
 				AP_SEND_DATA_TO_DYNAMIC_SUBTYPE,
 				(char *)data, len);
-	if (err < 0) {
+	if (err < 0)
 		dev_err(&sensor->sensor_pdev->dev, "Send dynamic para_data fail\n");
-	}
 
 	return num;
 }
 static DEVICE_ATTR_WO(data_to_dynamic);
 
 static ssize_t raw_data_acc_show(struct device *dev,
-				struct device_attribute *attr, char *buf)
+				 struct device_attribute *attr, char *buf)
 {
 	struct shub_data *sensor = dev_get_drvdata(dev);
 	u8 data[6];
@@ -1864,7 +1643,7 @@ static ssize_t raw_data_acc_show(struct device *dev,
 static DEVICE_ATTR_RO(raw_data_acc);
 
 static ssize_t raw_data_mag_show(struct device *dev,
-				struct device_attribute *attr, char *buf)
+				 struct device_attribute *attr, char *buf)
 {
 	struct shub_data *sensor = dev_get_drvdata(dev);
 	u8 data[6];
@@ -1887,7 +1666,7 @@ static ssize_t raw_data_mag_show(struct device *dev,
 static DEVICE_ATTR_RO(raw_data_mag);
 
 static ssize_t raw_data_gyro_show(struct device *dev,
-				struct device_attribute *attr, char *buf)
+				  struct device_attribute *attr, char *buf)
 {
 	struct shub_data *sensor = dev_get_drvdata(dev);
 	u8 data[6];
@@ -1910,7 +1689,7 @@ static ssize_t raw_data_gyro_show(struct device *dev,
 static DEVICE_ATTR_RO(raw_data_gyro);
 
 static ssize_t raw_data_als_show(struct device *dev,
-				struct device_attribute *attr, char *buf)
+				 struct device_attribute *attr, char *buf)
 {
 	struct shub_data *sensor = dev_get_drvdata(dev);
 	u8 data[2];
@@ -1923,10 +1702,11 @@ static ssize_t raw_data_als_show(struct device *dev,
 		return -EINVAL;
 	}
 
-	err = shub_sipc_read(sensor,
-			     SHUB_GET_LIGHT_RAWDATA_SUBTYPE, data, sizeof(data));
+	err = shub_sipc_read(sensor, SHUB_GET_LIGHT_RAWDATA_SUBTYPE, data,
+			     sizeof(data));
 	if (err < 0) {
-		dev_err(&sensor->sensor_pdev->dev, "read RegMapR_GetLightRawData failed!\n");
+		dev_err(&sensor->sensor_pdev->dev,
+			"read RegMapR_GetLightRawData failed!\n");
 		return err;
 	}
 	return sprintf(buf, "%d\n", ptr[0]);
@@ -1945,10 +1725,11 @@ static ssize_t raw_data_ps_show(struct device *dev,
 		dev_err(&sensor->sensor_pdev->dev, "mcu_mode == SHUB_BOOT!\n");
 		return -EINVAL;
 	}
-	err = shub_sipc_read(sensor,
-			     SHUB_GET_PROXIMITY_RAWDATA_SUBTYPE, data, sizeof(data));
+	err = shub_sipc_read(sensor, SHUB_GET_PROXIMITY_RAWDATA_SUBTYPE, data,
+			     sizeof(data));
 	if (err < 0) {
-		dev_err(&sensor->sensor_pdev->dev, "read RegMapR_GetProximityRawData failed!\n");
+		dev_err(&sensor->sensor_pdev->dev,
+			"read RegMapR_GetProximityRawData failed!\n");
 		return err;
 	}
 	return sprintf(buf, "%d\n", ptr[0]);
@@ -2192,8 +1973,8 @@ static ssize_t cm4_spi_set_show(struct device *dev,
 		 "\tset_op: 3\n"
 		 "\tfreq: spi frequency, for example 9: 9MHz, a: 10MHz, b: 11MHz\n"
 		 "\tcs: spi chip_select num, default 0\n"
-		 "\tmode: configure spi CPOL, CPHA, invalid value: 0, 1, 2, or 3\n"
-		 "\tbit_per_word: invalid value: 8, 16 or 32\n\n"
+		 "\tmode: configure spi CPOL, CPHA, valid value: 0, 1, 2, or 3\n"
+		 "\tbit_per_word: valid value: 8, 16 or 32\n\n"
 		 "\tstatus: show execution result. 1:success 0:fail\n\n"
 		 "%s\n", m);
 }
@@ -2226,7 +2007,7 @@ static ssize_t cm4_spi_sync_show(struct device *dev,
 		 "\tvalue1: the first value to be written\n"
 		 "\tvalue2: the second value to be written\n"
 		 "\tlen: num of regs to be read or written\n\n"
-		 "\execution result:\n"
+		 "execution result:\n"
 		 "%s%s\n", l, m);
 }
 static DEVICE_ATTR_RO(cm4_spi_sync);
@@ -2288,18 +2069,15 @@ static int shub_notifier_fn(struct notifier_block *nb,
 
 static int shub_reboot_notifier_fn(struct notifier_block *nb, unsigned long action, void *data)
 {
-	struct shub_data *sensor = container_of(nb, struct shub_data,
-			shub_reboot_notifier);
+	struct shub_data *sensor = container_of(nb, struct shub_data, shub_reboot_notifier);
 	int i = 0;
 
 	for (i = 0; i < MAX_SENSOR_HANDLE; i++) {
 		if (sensor_status[i]) {
 			if (shub_send_command(sensor, i, sensor_status[i], NULL, 0) < 0)
 				dev_err(&sensor->sensor_pdev->dev, "reboot write disable failed\n");
-			dev_info(&sensor->sensor_pdev->dev, "sensor_status[%d]\n", i);
 		}
 	}
-	dev_info(&sensor->sensor_pdev->dev, "reboot action=%d\n", action);
 	return NOTIFY_OK;
 }
 
@@ -2363,7 +2141,6 @@ static int shub_data_rdy_trigger_set_state(struct iio_trigger *trig, bool state)
 }
 
 static const struct iio_trigger_ops shub_iio_trigger_ops = {
-	.owner = THIS_MODULE,
 	.set_trigger_state = &shub_data_rdy_trigger_set_state,
 };
 
@@ -2466,7 +2243,7 @@ static const struct iio_chan_spec shub_channels[] = {
 	}
 };
 
-static unsigned long shub_allchannel_scan_masks[] = {
+static long shub_allchannel_scan_masks[] = {
 	/* timestamp channel is not managed by scan mask */
 	BIT(SHUB_SCAN_ID) | BIT(SHUB_SCAN_RAW_0) |
 	BIT(SHUB_SCAN_RAW_1) | BIT(SHUB_SCAN_RAW_2),
@@ -2475,7 +2252,6 @@ static unsigned long shub_allchannel_scan_masks[] = {
 
 static const struct iio_info shub_iio_info = {
 	.read_raw = &shub_read_raw,
-	.driver_module = THIS_MODULE,
 };
 
 static int shub_config_kfifo(struct iio_dev *iio_dev)
@@ -2557,6 +2333,67 @@ static void shub_config_init(struct shub_data *sensor)
 	sensor->is_sensorhub = 1;
 }
 
+#if defined(TARGET_PRODUCT_SCP) || defined(TARGET_PRODUCT_SCT)
+/* Modify by ye_qin for sar sensor on 20220515 begin */
+int shub_sar_register(struct sar_ctrl sar)
+{
+	struct platform_device *pdev;
+
+	if (!g_sensor || !sar.batch || !sar.enable)
+		return -1;
+
+	pdev = g_sensor->sensor_pdev;
+	dev_err(&pdev->dev, " shub_sar_register\n");
+
+	g_sensor->sar.batch = sar.batch;
+	g_sensor->sar.enable = sar.enable;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(shub_sar_register);
+
+int shub_sar_unregister(void)
+{
+	struct platform_device *pdev;
+
+	if (!g_sensor)
+		return -1;
+
+	pdev = g_sensor->sensor_pdev;
+	dev_err(&pdev->dev, " shub_sar_unregister\n");
+
+	g_sensor->sar.batch = NULL;
+	g_sensor->sar.enable = NULL;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(shub_sar_unregister);
+
+int shub_sar_send_iio(u8 *data, u16 len)
+{
+	struct platform_device *pdev;
+	u8 event[MAX_CM4_MSG_SIZE];
+	int ret;
+
+	if (!g_sensor || !data || len > MAX_CM4_MSG_SIZE)
+		return -1;
+
+	pdev = g_sensor->sensor_pdev;
+
+	mutex_lock(&g_sensor->mutex_send);
+	memset(event, 0x00, MAX_CM4_MSG_SIZE);
+	memcpy(event, data, len);
+	ret = iio_push_to_buffers(g_sensor->indio_dev, event);
+	mutex_unlock(&g_sensor->mutex_send);
+
+	dev_err(&pdev->dev, " shub_sar_send_iio:ret=%d\n", ret);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(shub_sar_send_iio);
+/* Modify by ye_qin for sar sensor on 20220515 end */
+#endif
+
 static int shub_probe(struct platform_device *pdev)
 {
 	struct shub_data *mcu;
@@ -2585,6 +2422,7 @@ static int shub_probe(struct platform_device *pdev)
 	if (error) {
 		mcu->sipc_sensorhub_id = SIPC_ID_PM_SYS;
 	}
+	#if defined(TARGET_PRODUCT_SCP) || defined(TARGET_PRODUCT_SCT)
 	//added by chenweican@wingtech.com for SCT-702 BSP bringup sensor on 2021-08-24 begin
 	gpio = of_get_named_gpio(pdev->dev.of_node,"prox-gpios",0);
 	if(gpio != 0){
@@ -2598,6 +2436,7 @@ static int shub_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "shub_probe of_get_named_gpio error\n");
 	}
 	//added by chenweican@wingtech.com for SCT-702 BSP bringup sensor on 2021-08-24 end
+	#endif
 	dev_info(&pdev->dev, "sipc_sensorhub_id=%u\n", mcu->sipc_sensorhub_id);
 
 	mcu->mcu_mode = SHUB_BOOT;
@@ -2640,10 +2479,9 @@ static int shub_probe(struct platform_device *pdev)
 	if (error)
 		goto err_free_mem;
 
-	INIT_WORK(&mcu->download_cali_data_work,
-		shub_download_calibration_data_work);
-	INIT_WORK(&mcu->savecalifile_work, shub_save_calibration_data);
-	wakeup_source_init(&sensorhub_wake_lock, "sensorhub_wake_lock");
+	sensorhub_wake_lock = wakeup_source_create("sensorhub_wake_lock");
+	wakeup_source_add(sensorhub_wake_lock);
+
 	/* init time sync and download firmware work */
 	INIT_DELAYED_WORK(&mcu->time_sync_work, shub_synctime_work);
 	mcu->driver_wq = create_singlethread_workqueue("sensorhub_daemon");
@@ -2705,6 +2543,7 @@ static int shub_remove(struct platform_device *pdev)
 	shub_remove_buffer(indio_dev);
 	iio_device_free(indio_dev);
 	kfree(mcu);
+
 	return 0;
 }
 
@@ -2718,7 +2557,6 @@ static struct platform_driver shub_driver = {
 	.remove = shub_remove,
 	.driver = {
 		   .name = SHUB_NAME,
-		   .owner = THIS_MODULE,
 		   .of_match_table = shub_match_table,
 	},
 };
@@ -2726,5 +2564,4 @@ static struct platform_driver shub_driver = {
 module_platform_driver(shub_driver);
 
 MODULE_DESCRIPTION("Spreadtrum Sensor Hub");
-MODULE_AUTHOR("Bao Yue <bao.yue@spreadtrum.com>");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

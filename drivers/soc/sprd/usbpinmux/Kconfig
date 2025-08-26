@@ -1,7 +1,0 @@
-config SPRD_USBPINMUX
-	bool "Spreadtrum USBPINMUX Support"
-        default n
-	help
-	  Say Y here to support USBPINMUX.
-
-

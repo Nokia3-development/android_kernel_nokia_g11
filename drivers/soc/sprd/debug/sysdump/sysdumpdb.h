@@ -47,10 +47,11 @@
 
 /*	minidump contents description macro	*/
 #define REGS_NUM_MAX 50 		/* max dump regs num in minidump,real num in regs_info_item  */
-#define SECTION_NUM_MAX 20		/* max dump section num in minidump */
-#define SECTION_NAME_MAX 20
-#define MINIDUMP_MEM_MAX 50
+#define SECTION_NUM_MAX 200		/* max dump section num in minidump */
+#define SECTION_NAME_MAX 40
+#define MINIDUMP_MEM_MAX (REGS_NUM_MAX + SECTION_NUM_MAX + 1)
 #define PT_BUF_SIZE	(2 * 1024 * 1024)
+
 #define EXTEND_STRING "extend"
 
 enum minidump_info_type {
@@ -112,7 +113,7 @@ struct minidump_data_desc{
 #endif
 
 struct exception_info_item {
-	char kernel_magic[4];  /* "K2.0" :make sure excep data valid */
+	char kernel_magic[8];  /* "K2.0" :make sure excep data valid */
 	char exception_serialno[EXCEPTION_INFO_SIZE_SHORT];
 	char exception_kernel_version[EXCEPTION_INFO_SIZE_MID];
 	char exception_reboot_reason[EXCEPTION_INFO_SIZE_SHORT];

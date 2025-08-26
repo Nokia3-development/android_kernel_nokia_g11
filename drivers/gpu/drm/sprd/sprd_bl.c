@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- *Copyright (C) 2019 Spreadtrum Communications Inc.
- *
- *This software is licensed under the terms of the GNU General Public
- *License version 2, as published by the Free Software Foundation, and
- *may be copied, distributed, and modified under those terms.
- *
- *This program is distributed in the hope that it will be useful,
- *but WITHOUT ANY WARRANTY; without even the implied warranty of
- *MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *GNU General Public License for more details.
+ * Copyright (C) 2020 Unisoc Inc.
  */
 
 #define pr_fmt(fmt) "sprd-backlight: " fmt
@@ -20,7 +12,8 @@
 #include <linux/pwm.h>
 
 #include "sprd_bl.h"
-#include <linux/delay.h>	//Modify by pengzhenhua1@wingtech.com for SCT-887,wt lcd backlight boost mode on(2021.9.3)
+#include "sprd_dpu.h"
+
 #define U_MAX_LEVEL	255
 #define U_MIN_LEVEL	0
 
@@ -63,166 +56,46 @@ int sprd_cabc_backlight_update(struct backlight_device *bd)
 
 	return 0;
 }
-//Modify by pengzhenhua1@wingtech.com for SCT-887,wt lcd backlight boost mode on(2021.9.3) begin
-#if 1
-#define NORMAL_MAX_LEVEL_DUTY_CYCLE (872)	//Modify by pengzhenhua1@wingtech.com for SCT-941,wt backlight normal max level is 225level 44mA bringup on(2021.10.21)
-#define NORMAL_MAX_LEVEL (225)			//Modify by pengzhenhua1@wingtech.com for SCT-941,wt backlight normal max level is 225level 44mA bringup on(2021.10.21)
-//#define BOOST_MODE_LEVEL (924)
-#define BOOST_MODE_LEVEL (255)
-static void pwm_backlight_boost_update(struct backlight_device *bd, struct sprd_backlight *pb, struct pwm_state state)
-{
-	int i = 0, div = 10;
-	int brightness = NORMAL_MAX_LEVEL + 1;
-	int avg_level = (BOOST_MODE_LEVEL -NORMAL_MAX_LEVEL -1 )/div + 1;	//Modify by pengzhenhua1@wingtech.com for SCT-887,wt lcd add the avg_level value(2021.10.4)
-	u64 duty_cycle;
-	u16 level;
-	struct sprd_backlight *bl = bl_get_data(bd);
-//	printk("pzhadd pwm_backlight_boost_update avg_level =%d\n",avg_level);
-	for (i = 0; i <= div; i++ ) {
-		brightness += avg_level;
-		if (brightness > BOOST_MODE_LEVEL)
-			brightness = BOOST_MODE_LEVEL;
-		bd->props.brightness = brightness;
-		sprd_backlight_normalize_map(bd, &level);
-		duty_cycle = level;
-		duty_cycle *= state.period;
-		do_div(duty_cycle, pb->scale);
-		state.duty_cycle = duty_cycle;
-		state.enabled = true;
-//		printk("pzhadd pwm_backlight_boost_update brightness:%d, level:%d\n",brightness,level);
-		pwm_apply_state(bl->pwm, &state);
-		mdelay(10);
-		if(brightness == BOOST_MODE_LEVEL)	//Modify by pengzhenhua1@wingtech.com for SCT-887,wt lcd add the avg_level value(2021.10.4)
-			break;
-	}
-}
 
-static void pwm_backlight_boost_to_normal(struct backlight_device *bd, struct sprd_backlight *pb, struct pwm_state state)
-{
-	int i = 0, div = 10;
-	int brightness = BOOST_MODE_LEVEL;
-	int avg_level = (BOOST_MODE_LEVEL -NORMAL_MAX_LEVEL -1 )/div+ 1;	//Modify by pengzhenhua1@wingtech.com for SCT-887,wt lcd add the avg_level value(2021.10.4)
-	u64 duty_cycle;
-	u16 level;
-	struct sprd_backlight *bl = bl_get_data(bd);
-	printk("pzhadd pwm_backlight_boost_to_normal\n");
-
-	for (i = 0; i <= div; i++ ) {
-		brightness -= avg_level;
-		if (brightness < NORMAL_MAX_LEVEL)
-			brightness = NORMAL_MAX_LEVEL;
-		bd->props.brightness = brightness;
-		sprd_backlight_normalize_map(bd, &level);
-		duty_cycle = level;
-		duty_cycle *= state.period;
-		do_div(duty_cycle, pb->scale);
-		state.duty_cycle = duty_cycle;
-		state.enabled = true;
-//		printk("pzhadd pwm_backlight_boost_to_normal brightness:%d, level:%d\n",brightness,level);
-		pwm_apply_state(bl->pwm, &state);
-		mdelay(5);
-		if (brightness == NORMAL_MAX_LEVEL)	//Modify by pengzhenhua1@wingtech.com for SCT-887,wt lcd add the avg_level value(2021.10.4)
-			break;
-	}
-}
-#endif
-
-extern int g_boostmode_flag;	//Modify by pengzhenhua1@wingtech.com for SCT-887,wt lcd backlight boost mode on(2021.11.23)
 static int sprd_pwm_backlight_update(struct backlight_device *bd)
 {
 	struct sprd_backlight *bl = bl_get_data(bd);
 	struct pwm_state state;
-	static int pre_brightness = 103;  //default brightness //Modify by pengzhenhua1@wingtech.com for SCT-887,wt lcd backlight boost mode on(2021.9.3)
-	static int brightness = 0;  //default brightness //Modify by pengzhenhua1@wingtech.com for SCT-887,wt lcd backlight boost mode on(2021.9.3)
 	u64 duty_cycle;
 	u16 level;
 
-printk("pzhadd 1 sprd_pwm_backlight_update brightness:%d\n",bd->props.brightness);
-//printk("pzhadd 2 sprd_pwm_backlight_update max_brightness:%d\n",bd->props.max_brightness);
 	sprd_backlight_normalize_map(bd, &level);
-	brightness = bd->props.brightness;
+
 	if (bd->props.power != FB_BLANK_UNBLANK ||
 	    bd->props.fb_blank != FB_BLANK_UNBLANK ||
 	    bd->props.state & BL_CORE_FBBLANK)
-	{
 		level = 0;
-		brightness = 0;
-	}
-//Modify by pengzhenhua1@wingtech.com for SCT-887,wt lcd backlight boost mode on(2021.11.23) begin
-	if(g_boostmode_flag == 0)
-	{
-		if(brightness > NORMAL_MAX_LEVEL)
-		{
-			brightness = NORMAL_MAX_LEVEL;
-			bd->props.brightness = brightness;
-			sprd_backlight_normalize_map(bd, &level);
-		}
-//		printk("pzhadd 1 sprd_pwm_backlight_update brightness:%d\n",bd->props.brightness);
-	}
-//Modify by pengzhenhua1@wingtech.com for SCT-887,wt lcd backlight boost mode on(2021.11.23) end
-//printk("pzhadd 3 sprd_pwm_backlight_update level:%d\n",level);
-//printk("pzhadd 1 sprd_pwm_backlight_update bl->cabc_en:%d\n",bl->cabc_en);
-	pwm_get_state(bl->pwm, &state);
-	if (brightness > 0 && brightness <= NORMAL_MAX_LEVEL) {
-		if(pre_brightness == BOOST_MODE_LEVEL)
-		{
-			pwm_backlight_boost_to_normal(bd, bl, state);
-			pre_brightness = NORMAL_MAX_LEVEL;
-		}
-		//else	////Modify by pengzhenhua1@wingtech.com for SCP-1744,wt lcd backlight boost mode on(2021.10.29)
-		//{
-			if (bl->cabc_en)
-				duty_cycle = DIV_ROUND_CLOSEST_ULL(bl->cabc_level *
-					level, bl->cabc_refer_level);
-			else
-				duty_cycle = level;
 
-			pr_debug("pwm brightness level: %llu\n", duty_cycle);
-			duty_cycle *= state.period;
-			do_div(duty_cycle, bl->scale);
-			state.duty_cycle = duty_cycle;
-			state.enabled = true;
-			pwm_apply_state(bl->pwm, &state);
-		//}
-	} 
-	else if ((brightness > NORMAL_MAX_LEVEL && brightness < BOOST_MODE_LEVEL) ||(brightness > BOOST_MODE_LEVEL) )
-	{
-		if(pre_brightness == BOOST_MODE_LEVEL)
-		{
-			pwm_backlight_boost_to_normal(bd, bl, state);
-			pre_brightness = NORMAL_MAX_LEVEL;
-		}
+	pwm_get_state(bl->pwm, &state);
+	if (level > 0) {
+		if (bl->cabc_en)
+			duty_cycle = DIV_ROUND_CLOSEST_ULL(bl->cabc_level *
+				level, bl->cabc_refer_level);
 		else
-		{
-			duty_cycle = NORMAL_MAX_LEVEL_DUTY_CYCLE;
-			duty_cycle *= state.period;
-			do_div(duty_cycle, bl->scale);
-			state.duty_cycle = duty_cycle;
-			state.enabled = true;
-			pwm_apply_state(bl->pwm, &state);
-			pre_brightness = NORMAL_MAX_LEVEL;
-			bd->props.brightness = pre_brightness;//zhiqing.liu add, update /sys/class/backlight/sprd_backlight/brightness info, 2021.11.23
-		}
-	}
-	else if (brightness == BOOST_MODE_LEVEL && pre_brightness != BOOST_MODE_LEVEL)
-	{
-		pwm_backlight_boost_update(bd, bl, state);
-		pre_brightness = BOOST_MODE_LEVEL;
-	}
-	else if (brightness == 0)
-	{
+			duty_cycle = level;
+
+		pr_debug("pwm brightness level: %llu\n", duty_cycle);
+
+		duty_cycle *= state.period;
+		do_div(duty_cycle, bl->scale);
+		state.duty_cycle = duty_cycle;
+		state.enabled = true;
+	} else {
 		pr_debug("pwm brightness level: %u\n", level);
-		printk("pzhadd 6 sprd_pwm_backlight_update OFF\n");
+
 		state.duty_cycle = 0;
 		state.enabled = false;
-		pwm_apply_state(bl->pwm, &state);
-		pre_brightness = NORMAL_MAX_LEVEL;	//add by pengzhenhua1@wingtech.com for SCP-951,wt lcd backlight boost mode off with power off,(2021.9.3)
 	}
-//	pwm_apply_state(bl->pwm, &state);	//del by pengzhenhua1@wingtech.com for SCT-887,wt lcd backlight boost mode on(2021.9.3)
+	pwm_apply_state(bl->pwm, &state);
 
 	return 0;
 }
-//Modify by pengzhenhua1@wingtech.com for SCT-887,wt lcd backlight boost mode on(2021.9.3) end
+
 static const struct backlight_ops sprd_backlight_ops = {
 	.update_status = sprd_pwm_backlight_update,
 };
@@ -294,6 +167,7 @@ static int sprd_backlight_probe(struct platform_device *pdev)
 	struct pwm_state state;
 	struct sprd_backlight *bl;
 	int div, ret;
+
 	bl = devm_kzalloc(&pdev->dev,
 			sizeof(struct sprd_backlight), GFP_KERNEL);
 	if (!bl)
@@ -356,17 +230,13 @@ static const struct of_device_id sprd_backlight_of_match[] = {
 	{ }
 };
 
-MODULE_DEVICE_TABLE(of, pwm_backlight_of_match);
-
-static struct platform_driver sprd_backlight_driver = {
+struct platform_driver sprd_backlight_driver = {
 	.driver		= {
 		.name		= "sprd-backlight",
 		.of_match_table	= sprd_backlight_of_match,
 	},
 	.probe		= sprd_backlight_probe,
 };
-
-module_platform_driver(sprd_backlight_driver);
 
 MODULE_AUTHOR("Kevin Tang <kevin.tang@unisoc.com>");
 MODULE_DESCRIPTION("SPRD Base Backlight Driver");

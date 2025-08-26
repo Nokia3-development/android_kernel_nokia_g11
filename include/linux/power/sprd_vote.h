@@ -5,7 +5,7 @@
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
-**/
+ */
 
 #ifndef _SPRD_VOTE_H
 #define _SPRD_VOTE_H
@@ -44,6 +44,7 @@ enum SPRD_VOTE_TYPE_IBUS_ID {
 	SPRD_VOTE_TYPE_IBUS_ID_INPUT_CURRENT_LIMIT,
 	SPRD_VOTE_TYPE_IBUS_ID_CHARGE_CONTROL_LIMIT,
 	SPRD_VOTE_TYPE_IBUS_ID_CHARGER_TYPE,
+	SPRD_VOTE_TYPE_IBUS_ID_FCHG_FIXED_TRANSITION,
 	SPRD_VOTE_TYPE_IBUS_ID_MAX,
 };
 

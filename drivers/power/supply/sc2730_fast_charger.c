@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (C) 2018 Spreadtrum Communications Inc.
 
+#include <linux/extcon-provider.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
@@ -12,8 +13,8 @@
 #include <linux/of.h>
 #include <linux/slab.h>
 #include <linux/power/charger-manager.h>
-#include <linux/usb/tcpm.h>
-#include <linux/usb/pd.h>
+#include <linux/usb/sprd_tcpm.h>
+#include <linux/usb/sprd_pd.h>
 
 #define FCHG1_TIME1				0x0
 #define FCHG1_TIME2				0x4
@@ -47,6 +48,7 @@
 
 #define ANA_REG_IB_TRIM_MASK			GENMASK(6, 0)
 #define ANA_REG_IB_TRIM_SHIFT			2
+#define ANA_REG_IB_TRIM_MAX			0x7f
 #define ANA_REG_IB_TRIM_EM_SEL_BIT		BIT(1)
 #define ANA_REG_IB_TRUM_OFFSET			0x1e
 
@@ -84,8 +86,7 @@
 #define SC2730_FCHG_TIMEOUT			msecs_to_jiffies(5000)
 #define SC2730_FAST_CHARGER_DETECT_MS		msecs_to_jiffies(1000)
 
-//modify by fangduozhu.wt, max power 20w
-#define SC2730_PD_DEFAULT_POWER_UW		21000000
+#define SC2730_PD_DEFAULT_POWER_UW		10000000
 
 #define SC2730_ENABLE_PPS			2
 #define SC2730_DISABLE_PPS			1
@@ -151,7 +152,7 @@ static int sc2730_fchg_internal_cur_calibration(struct sc2730_fchg_info *info)
 	const struct sc27xx_fast_chg_data *pdata = info->pdata;
 
 	cell = nvmem_cell_get(info->dev, "fchg_cur_calib");
-	if (IS_ERR(cell))
+	if (IS_ERR_OR_NULL(cell))
 		return PTR_ERR(cell);
 
 	buf = nvmem_cell_read(cell, &len);
@@ -170,6 +171,12 @@ static int sc2730_fchg_internal_cur_calibration(struct sc2730_fchg_info *info)
 	 */
 	calib_current = (calib_data & FCHG_CALI_MASK) >> FCHG_CALI_SHIFT;
 	calib_current += ANA_REG_IB_TRUM_OFFSET;
+
+	if (calib_current < 0 || calib_current > ANA_REG_IB_TRIM_MAX) {
+		dev_info(info->dev, "The compensated calib_current exceeds the range of IB_TRIM,"
+			 " calib_current=%d\n", calib_current);
+		calib_current = (calib_data & FCHG_CALI_MASK) >> FCHG_CALI_SHIFT;
+	}
 
 	ret = regmap_update_bits(info->regmap,
 				 pdata->ib_ctrl,
@@ -229,9 +236,10 @@ static irqreturn_t sc2730_fchg_interrupt(int irq, void *dev_id)
 
 	if (info->state == POWER_SUPPLY_USB_TYPE_PD)
 		dev_info(info->dev, "Already PD, don't update SFCP\n");
-	else if ((int_sts & FCHG_INT_STS_DETDONE) && (int_sts0 & FCHG_OUT_OK_BIT))
-		info->state = POWER_SUPPLY_USB_TYPE_SFCP_1P0;
-	else
+	else if ((int_sts & FCHG_INT_STS_DETDONE) && (int_sts0 & FCHG_OUT_OK_BIT)) {
+		info->state = POWER_SUPPLY_USB_TYPE_PD;
+		dev_info(info->dev, "setting sfcp 1.0 to PD type\n");
+	} else
 		info->state = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 
 	complete(&info->completion);
@@ -310,7 +318,7 @@ static u32 sc2730_fchg_get_detect_status(struct sc2730_fchg_info *info)
 		value = 3;
 
 	/*
-	 * Due to the the current source of the fast charge internal module is small
+	 * Due to the current source of the fast charge internal module is small
 	 * we need to dynamically calibrate it through the software during the process
 	 * of identifying fast charge. After fast charge recognition is completed, we
 	 * disable soft calibration compensate function, in order to prevent the dm current
@@ -409,7 +417,7 @@ static void sc2730_fchg_disable(struct sc2730_fchg_info *info)
 		dev_err(info->dev, "failed to disable fast charger.\n");
 
 	/*
-	 * Adding delay is to make sure writing the the control register
+	 * Adding delay is to make sure writing the control register
 	 * successfully firstly, then disable the module and clock.
 	 */
 	msleep(100);
@@ -451,10 +459,10 @@ static int sc2730_fchg_sfcp_adjust_voltage(struct sc2730_fchg_info *info,
 	return 0;
 }
 
-#ifdef CONFIG_TYPEC_TCPM
+#if IS_ENABLED(CONFIG_SPRD_TYPEC_TCPM)
 static int sc2730_get_pd_fixed_voltage_max(struct sc2730_fchg_info *info, u32 *max_vol)
 {
-	struct tcpm_port *port;
+	struct sprd_tcpm_port *port;
 	int i, adptor_max_vbus = 0;
 
 	if (!info->psy_tcpm) {
@@ -468,14 +476,14 @@ static int sc2730_get_pd_fixed_voltage_max(struct sc2730_fchg_info *info, u32 *m
 		return -EINVAL;
 	}
 
-	tcpm_get_source_capabilities(port, &info->pd_source_cap);
+	sprd_tcpm_get_source_capabilities(port, &info->pd_source_cap);
 	if (!info->pd_source_cap.nr_source_caps) {
 		dev_err(info->dev, "failed to obtain the PD power supply capacity\n");
 		return -EINVAL;
 	}
 
 	for (i = 0; i < info->pd_source_cap.nr_source_caps; i++) {
-		if (info->pd_source_cap.type[i] == PDO_TYPE_FIXED &&
+		if (info->pd_source_cap.type[i] == SPRD_PDO_TYPE_FIXED &&
 		    adptor_max_vbus < info->pd_source_cap.max_mv[i])
 			adptor_max_vbus = info->pd_source_cap.max_mv[i];
 	}
@@ -495,6 +503,7 @@ static int sc2730_get_pps_voltage_max(struct sc2730_fchg_info *info, u32 *max_vo
 		return -EINVAL;
 	}
 
+	val.intval = 0;
 	ret = power_supply_get_property(info->psy_tcpm,
 					POWER_SUPPLY_PROP_VOLTAGE_MAX,
 					&val);
@@ -519,6 +528,7 @@ static int sc2730_get_pps_current_max(struct sc2730_fchg_info *info, u32
 		return -EINVAL;
 	}
 
+	val.intval = 0;
 	ret = power_supply_get_property(info->psy_tcpm,
 					POWER_SUPPLY_PROP_CURRENT_MAX,
 					&val);
@@ -535,9 +545,9 @@ static int sc2730_get_pps_current_max(struct sc2730_fchg_info *info, u32
 static int sc2730_fchg_pd_adjust_voltage(struct sc2730_fchg_info *info,
 					 u32 input_vol)
 {
-	struct tcpm_port *port;
+	struct sprd_tcpm_port *port;
 	int ret, i, index = -1;
-	u32 pdo[PDO_MAX_OBJECTS];
+	u32 pdo[SPRD_PDO_MAX_OBJECTS];
 	unsigned int snk_uw;
 
 	if (!info->psy_tcpm) {
@@ -551,24 +561,17 @@ static int sc2730_fchg_pd_adjust_voltage(struct sc2730_fchg_info *info,
 		return -EINVAL;
 	}
 
-	tcpm_get_source_capabilities(port, &info->pd_source_cap);
+	sprd_tcpm_get_source_capabilities(port, &info->pd_source_cap);
 	if (!info->pd_source_cap.nr_source_caps) {
-//modify by fangduozhu.wt, max power 20w begin
-		if (input_vol == FCHG_VOLTAGE_5V) {
-			pdo[0] = PDO_FIXED(5000, 2000, 0);
-			snk_uw = SC2730_PD_DEFAULT_POWER_UW;
-		} else {
-			pdo[0] = PDO_FIXED(9000, 2000, 0);
-			snk_uw = 18000000;
-		}
-//modify by fangduozhu.wt, max power 20w end
+		pdo[0] = SPRD_PDO_FIXED(5000, 2000, 0);
+		snk_uw = SC2730_PD_DEFAULT_POWER_UW;
 		index = 0;
 		goto done;
 	}
 
 	for (i = 0; i < info->pd_source_cap.nr_source_caps; i++) {
 		if ((info->pd_source_cap.max_mv[i] <= input_vol / 1000) &&
-		    (info->pd_source_cap.type[i] == PDO_TYPE_FIXED))
+		    (info->pd_source_cap.type[i] == SPRD_PDO_TYPE_FIXED))
 			index = i;
 	}
 
@@ -579,28 +582,28 @@ static int sc2730_fchg_pd_adjust_voltage(struct sc2730_fchg_info *info,
 	if (index < 0 || index >= info->pd_source_cap.nr_source_caps) {
 		dev_err(info->dev, "Index is invalid!!!\n");
 		return -EINVAL;
-		}
+	}
 
 	snk_uw = info->pd_source_cap.max_mv[index] * info->pd_source_cap.ma[index];
 	if (snk_uw > info->pd_fixed_max_uw)
 		snk_uw = info->pd_fixed_max_uw;
 
 	for (i = 0; i < index + 1; i++) {
-		pdo[i] = PDO_FIXED(info->pd_source_cap.max_mv[i], info->pd_source_cap.ma[i], 0);
+		pdo[i] = SPRD_PDO_FIXED(info->pd_source_cap.max_mv[i], info->pd_source_cap.ma[i], 0);
 		if (info->pd_source_cap.max_mv[i] * info->pd_source_cap.ma[i] > snk_uw)
-			pdo[i] = PDO_FIXED(info->pd_source_cap.max_mv[i],
-					   snk_uw / info->pd_source_cap.max_mv[i],
-					   0);
+			pdo[i] = SPRD_PDO_FIXED(info->pd_source_cap.max_mv[i],
+						snk_uw / info->pd_source_cap.max_mv[i],
+						0);
 	}
 
 done:
-	ret = tcpm_update_sink_capabilities(port, pdo,
-					    index + 1,
-					    snk_uw / 1000);
-		if (ret) {
+	ret = sprd_tcpm_update_sink_capabilities(port, pdo,
+						 index + 1,
+						 snk_uw / 1000);
+	if (ret) {
 		dev_err(info->dev, "failed to set pd, ret = %d\n", ret);
-			return ret;
-		}
+		return ret;
+	}
 
 	return 0;
 }
@@ -681,7 +684,7 @@ static int sc2730_fchg_enable_pps(struct sc2730_fchg_info *info, bool enable)
 		val.intval = SC2730_DISABLE_PPS;
 		ret = power_supply_set_property(info->psy_tcpm, POWER_SUPPLY_PROP_ONLINE, &val);
 		if (ret) {
-			dev_err(info->dev, "failed to disbale pps, ret = %d\n", ret);
+			dev_err(info->dev, "failed to disable pps, ret = %d\n", ret);
 			return ret;
 		}
 		info->pps_active = false;
@@ -705,7 +708,7 @@ static int sc2730_fchg_pd_change(struct notifier_block *nb,
 		container_of(nb, struct sc2730_fchg_info, pd_notify);
 	struct power_supply *psy = data;
 
-	if (strcmp(psy->desc->name, "tcpm-source-psy-sc27xx-pd") != 0)
+	if (strcmp(psy->desc->name, "sprd-tcpm-source-psy-sc27xx-pd") != 0)
 		goto out;
 
 	if (event != PSY_EVENT_PROP_CHANGED)
@@ -724,8 +727,8 @@ static void sc2730_fchg_pd_change_work(struct work_struct *data)
 	struct sc2730_fchg_info *info =
 		container_of(data, struct sc2730_fchg_info, pd_change_work);
 	union power_supply_propval val;
-	struct tcpm_port *port;
-	int pd_type, ret;
+	struct sprd_tcpm_port *port;
+	int pd_type = 0, ret;
 
 	mutex_lock(&info->lock);
 
@@ -740,6 +743,7 @@ static void sc2730_fchg_pd_change_work(struct work_struct *data)
 		goto out;
 	}
 
+	val.intval = 0;
 	ret = power_supply_get_property(info->psy_tcpm,
 					POWER_SUPPLY_PROP_USB_TYPE,
 					&val);
@@ -772,7 +776,7 @@ static void sc2730_fchg_pd_change_work(struct work_struct *data)
 		info->pd_enable = false;
 		info->pps_enable = false;
 		info->pps_active = false;
-		if (info->state != POWER_SUPPLY_USB_TYPE_SFCP_1P0)
+		if (info->state != POWER_SUPPLY_USB_TYPE_PD)
 			info->state = POWER_SUPPLY_USB_TYPE_C;
 	}
 
@@ -782,6 +786,7 @@ out:
 out1:
 	dev_info(info->dev, "pd type = %d\n", pd_type);
 }
+
 #else
 static int sc2730_get_pd_fixed_voltage_max(struct sc2730_fchg_info *info, u32
 				      *max_vol)
@@ -845,13 +850,6 @@ static int sc2730_fchg_usb_get_property(struct power_supply *psy,
 	mutex_lock(&info->lock);
 
 	switch (psp) {
-	case POWER_SUPPLY_PROP_ONLINE:
-		val->intval = 1;
-//modify by fangduozhu.wt, show max power info
-		if (info->state == POWER_SUPPLY_USB_TYPE_UNKNOWN
-			|| info->state == POWER_SUPPLY_USB_TYPE_C)
-			val->intval = 0;
-		break;
 	case POWER_SUPPLY_PROP_USB_TYPE:
 		val->intval = info->state;
 		break;
@@ -863,20 +861,10 @@ static int sc2730_fchg_usb_get_property(struct power_supply *psy,
 			sc2730_get_pps_voltage_max(info, &val->intval);
 		else if (info->sfcp_enable)
 			val->intval = FCHG_VOLTAGE_9V;
-		else
-			val->intval = FCHG_VOLTAGE_5V;
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
 		if (info->pps_enable)
 			sc2730_get_pps_current_max(info, &val->intval);
-		else if (info->pd_enable)
-			val->intval = 2200000;
-		else if (info->usb_phy->chg_type == DCP_TYPE)
-			val->intval = 2000000;
-		else if (info->usb_phy->chg_type == CDP_TYPE)
-			val->intval = 1500000;
-		else
-			val->intval = 500000;
 		break;
 	default:
 		ret = -EINVAL;
@@ -965,21 +953,16 @@ static enum power_supply_usb_type sc2730_fchg_usb_types[] = {
 	POWER_SUPPLY_USB_TYPE_PD,
 	POWER_SUPPLY_USB_TYPE_PD_PPS,
 	POWER_SUPPLY_USB_TYPE_PD_DRP,
-	POWER_SUPPLY_USB_TYPE_SFCP_1P0,
-	POWER_SUPPLY_USB_TYPE_SFCP_2P0,
 };
 
 static enum power_supply_property sc2730_fchg_usb_props[] = {
 	POWER_SUPPLY_PROP_VOLTAGE_MAX,
-	POWER_SUPPLY_PROP_CURRENT_MAX,
-	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_USB_TYPE,
 };
 
 static const struct power_supply_desc sc2730_fchg_desc = {
 	.name			= "sc2730_fast_charger",
-//modify by fangduozhu, avoid influence of charge status verification(2021.11.17)
-	.type			= POWER_SUPPLY_TYPE_UNKNOWN,
+	.type			= POWER_SUPPLY_TYPE_USB,
 	.properties		= sc2730_fchg_usb_props,
 	.num_properties		= ARRAY_SIZE(sc2730_fchg_usb_props),
 	.get_property		= sc2730_fchg_usb_get_property,
@@ -1008,7 +991,7 @@ static void sc2730_fchg_work(struct work_struct *data)
 		if (info->pd_enable || info->pps_enable || !info->support_sfcp) {
 			sc2730_fchg_disable(info);
 		} else if (sc2730_fchg_get_detect_status(info) ==
-		    POWER_SUPPLY_USB_TYPE_SFCP_1P0) {
+		    POWER_SUPPLY_USB_TYPE_PD) {
 			/*
 			 * Must release info->lock before send fast charge event
 			 * to charger manager, otherwise it will cause deadlock.
@@ -1019,9 +1002,9 @@ static void sc2730_fchg_work(struct work_struct *data)
 			dev_info(info->dev, "pd_enable = %d, sfcp_enable = %d\n",
 				 info->pd_enable, info->sfcp_enable);
 			return;
-		} else {
-			sc2730_fchg_disable(info);
 		}
+
+		sc2730_fchg_disable(info);
 	}
 
 	mutex_unlock(&info->lock);

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Near Field Communication (NFC) devices
 #
@@ -48,24 +49,6 @@ config NFC_PORT100
 
 	  If unsure, say N.
 
-config NXP_PN557
-    tristate "NFC driver solution - NXPMicroelectronics PN533 NFC Controller Driver"
-    #default n
-    depends on I2C
-    help
-      STMicroelectronics PN533 Near Field Communication controller support.
-      PN533 is standalone NFC and PN533 is combined with secure element.
-      If configures to be y, means devices supports NFC functionality.
-      If configures to be n, means devices doesn't support NFC functionality.
-
-config NXP_NFC_PN8XT
-        bool "Nxp NFC pn8xt Controller"
-        ---help---
-          You'll have to say Y if your computer contains an pn8xt I2C device that
-          you want to use under Linux.
-
-          You can say N here if you don't have any pn8xt I2C connected to your computer.
-
 source "drivers/nfc/fdp/Kconfig"
 source "drivers/nfc/pn544/Kconfig"
 source "drivers/nfc/pn533/Kconfig"
@@ -76,5 +59,4 @@ source "drivers/nfc/st-nci/Kconfig"
 source "drivers/nfc/nxp-nci/Kconfig"
 source "drivers/nfc/s3fwrn5/Kconfig"
 source "drivers/nfc/st95hf/Kconfig"
-source "drivers/nfc/pn557/Kconfig"
 endmenu

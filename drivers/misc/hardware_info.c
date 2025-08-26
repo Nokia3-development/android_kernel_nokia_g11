@@ -1,8 +1,10 @@
 //Added by wt.yanrenjie for SCT-702,wt hardware info begin
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/device.h>
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
+#include <linux/of.h>
 #include <asm/uaccess.h>
 #include <linux/uaccess.h>
 #include <linux/proc_fs.h>
@@ -44,6 +46,79 @@ char* hardwareinfo_items[HARDWARE_MAX_ITEM] =
 	"BOARD_ID",
 	"HARDWARE_ID"
 };
+static int sprd_battery_parse_cmdline_match(char *match_str, char *result, int size)
+{
+	struct device_node *cmdline_node = NULL;
+	const char *cmdline;
+	char *match, *match_end;
+	int len, match_str_len, ret;
+
+	if (!result || !match_str)
+		return -EINVAL;
+
+	memset(result, '\0', size);
+	match_str_len = strlen(match_str);
+
+	cmdline_node = of_find_node_by_path("/chosen");
+	if (!cmdline_node) {
+		printk( "hardwareinfo,line62: NULL pointer!!!\n");
+		return -EINVAL;
+	}
+
+	ret = of_property_read_string(cmdline_node, "bootargs", &cmdline);
+	if (ret) {
+		printk( "hardwareinfo,line68:failed to read bootargs\n");
+		return -EINVAL;
+	}
+
+	match = strstr(cmdline, match_str);
+	if (!match) {
+		printk( "hardwareinfo,line74:fail in cmdline\n");
+		return -EINVAL;
+	}
+
+	match_end = strstr((match + match_str_len), " ");
+	if (!match_end) {
+		printk( "hardwareinfo,line80: fail in cmdline\n");
+		return -EINVAL;
+	}
+
+	len = match_end - (match + match_str_len);
+	if (len < 0 || len > size) {
+		printk( "hardwareinfo,line86: fail\n");
+		return -EINVAL;
+	}
+
+	memcpy(result, (match + match_str_len), len);
+
+	return 0;
+}
+
+int sprd_battery_parse_battery_id(void)
+{
+	char *str = "bat.id=";
+	char result[32] = {};
+	int id = 0, ret;
+
+	ret = sprd_battery_parse_cmdline_match( str, result, sizeof(result));
+	if (!ret) {
+		ret = kstrtoint(result, 10, &id);
+		if (ret) {
+			id = 0;
+			printk( "hardwareinfo,line106:Covert bat_id fail\n"	);
+		}
+	}
+	if(id == 0){
+		hardwareinfo_set_prop(HARDWARE_BATTERY_ID, "T19655-Gaoyuan-5050mAh");
+	}else if(id == 1){
+		hardwareinfo_set_prop(HARDWARE_BATTERY_ID, "T19655-Fenghua-5050mAh");
+	}else if(id == 2){
+		hardwareinfo_set_prop(HARDWARE_BATTERY_ID, "simple-battery");
+	}else{
+		hardwareinfo_set_prop(HARDWARE_BATTERY_ID, "Unknow-battery_id！！！");
+	}
+	return id;
+}
 
 int hardwareinfo_set_prop(int cmd, const char *name)
 {
@@ -69,7 +144,8 @@ static char* boardid_get(void)
 	char* s1= "";
 	char* s2="not found";
 
-	s1 = strstr(saved_command_line, "board_id=");
+	//s1 = strstr(saved_command_line, "board_id=");
+	s1 = NULL;
 	if(!s1) {
 		printk("board_id not found in cmdline\n");
 		return s2;
@@ -89,7 +165,8 @@ static char* hwid_get(void)
 	char* s2="not found";
 	char *ptr =NULL;
 
-	s1 = strstr(saved_command_line, "hardware_id=");
+	//s1 = strstr(saved_command_line, "hardware_id=");
+	s1 = NULL;
 	if(!s1) {
 		printk("hardware_id not found in cmdline\n");
 		return s2;
@@ -200,6 +277,7 @@ static long hardwareinfo_ioctl(struct file *file, unsigned int cmd,unsigned long
 		hardwareinfo_num = HARDWARE_NFC;
 		break;
 	case HARDWARE_BATTERY_ID_GET:
+		sprd_battery_parse_battery_id();
 		hardwareinfo_num = HARDWARE_BATTERY_ID;
 		break;
 	case HARDWARE_CHARGER_IC_INFO_GET:

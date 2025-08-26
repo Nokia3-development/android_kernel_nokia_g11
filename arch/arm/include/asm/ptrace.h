@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  arch/arm/include/asm/ptrace.h
  *
  *  Copyright (C) 1996-2003 Russell King
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #ifndef __ASM_ARM_PTRACE_H
 #define __ASM_ARM_PTRACE_H
@@ -166,6 +163,8 @@ static inline unsigned long user_stack_pointer(struct pt_regs *regs)
 #define current_pt_regs(void) ({ (struct pt_regs *)			\
 		((current_stack_pointer | (THREAD_SIZE - 1)) - 7) - 1;	\
 })
+
+extern void get_pt_regs(struct pt_regs *);
 
 #endif /* __ASSEMBLY__ */
 #endif

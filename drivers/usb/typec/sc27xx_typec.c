@@ -2,7 +2,7 @@
 /*
  * Driver for Spreadtrum SC27XX USB Type-C
  *
- * Copyright (C) 2018 Spreadtrum Communications Inc.
+ * Copyright (C) 2020 Spreadtrum Communications Inc.
  */
 
 #include <linux/interrupt.h>
@@ -10,7 +10,6 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/usb/typec.h>
-#include <linux/spinlock.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/extcon.h>
@@ -19,6 +18,7 @@
 #include <linux/slab.h>
 #include <linux/of_gpio.h>
 #include <linux/gpio/consumer.h>
+#include <linux/extcon-provider.h>
 
 /* registers definitions for controller REGS_TYPEC */
 #define SC27XX_EN			0x00
@@ -62,7 +62,8 @@
 #define UMP9620_EFUSE_CC1_SHIFT		1
 #define UMP9620_EFUSE_CC2_SHIFT		11
 
-#define SC27XX_CC_MASK(n)		GENMASK((n) + 4, (n))
+#define SC27XX_CC1_MASK(n)		GENMASK((n) + 9, (n) + 5)
+#define SC27XX_CC2_MASK(n)		GENMASK((n) + 4, (n))
 #define SC27XX_CC_SHIFT(n)		(n)
 
 /* sc2721 registers definitions for controller REGS_TYPEC */
@@ -260,6 +261,7 @@ static void sc27xx_typec_disconnect(struct sc27xx_typec *sc, u32 status)
 	}
 }
 
+#if 0
 static int sc27xx_typec_dr_set(const struct typec_capability *cap,
 				enum typec_data_role role)
 {
@@ -280,6 +282,7 @@ static int sc27xx_typec_vconn_set(const struct typec_capability *cap,
 	/* TODO: Vconn set */
 	return 0;
 }
+#endif
 
 static irqreturn_t sc27xx_typec_interrupt(int irq, void *data)
 {
@@ -327,10 +330,10 @@ static int sc27xx_typec_enable(struct sc27xx_typec *sc)
 
 	val &= ~SC27XX_MODE_MASK;
 	switch (sc->typec_cap.type) {
-	case TYPEC_PORT_SRC:
+	case TYPEC_PORT_DFP:
 		val |= SC27XX_MODE_SRC;
 		break;
-	case TYPEC_PORT_SNK:
+	case TYPEC_PORT_UFP:
 		val |= SC27XX_MODE_SNK;
 		break;
 	case TYPEC_PORT_DRP:
@@ -385,7 +388,7 @@ static int sc27xx_typec_get_cc1_efuse(struct sc27xx_typec *sc)
 	struct nvmem_cell *cell;
 	u32 calib_data = 0;
 	void *buf;
-	size_t len = 0;
+	size_t len;
 
 	cell = nvmem_cell_get(sc->dev, "typec_cc1_cal");
 	if (IS_ERR(cell))
@@ -398,7 +401,7 @@ static int sc27xx_typec_get_cc1_efuse(struct sc27xx_typec *sc)
 		return PTR_ERR(buf);
 
 	memcpy(&calib_data, buf, min(len, sizeof(u32)));
-	calib_data = (calib_data & SC27XX_CC_MASK(sc->var_data->efuse_cc1_shift))
+	calib_data = (calib_data & SC27XX_CC1_MASK(sc->var_data->efuse_cc1_shift))
 			>> SC27XX_CC_SHIFT(sc->var_data->efuse_cc1_shift);
 	kfree(buf);
 
@@ -423,7 +426,7 @@ static int sc27xx_typec_get_cc2_efuse(struct sc27xx_typec *sc)
 		return PTR_ERR(buf);
 
 	memcpy(&calib_data, buf, min(len, sizeof(u32)));
-	calib_data = (calib_data & SC27XX_CC_MASK(sc->var_data->efuse_cc2_shift))
+	calib_data = (calib_data & SC27XX_CC2_MASK(sc->var_data->efuse_cc2_shift))
 			>> SC27XX_CC_SHIFT(sc->var_data->efuse_cc2_shift);
 	kfree(buf);
 
@@ -497,7 +500,7 @@ static int sc27xx_typec_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = of_property_read_u32(node, "mode", &mode);
+	ret = of_property_read_u32(node, "sprd,mode", &mode);
 	if (ret) {
 		dev_err(dev, "failed to get typec port mode type\n");
 		return ret;
@@ -528,9 +531,9 @@ static int sc27xx_typec_probe(struct platform_device *pdev)
 	sc->var_data = pdata;
 	sc->typec_cap.type = mode;
 	sc->typec_cap.data = TYPEC_PORT_DRD;
-	sc->typec_cap.dr_set = sc27xx_typec_dr_set;
-	sc->typec_cap.pr_set = sc27xx_typec_pr_set;
-	sc->typec_cap.vconn_set = sc27xx_typec_vconn_set;
+	//sc->typec_cap.dr_set = sc27xx_typec_dr_set;
+	//sc->typec_cap.pr_set = sc27xx_typec_pr_set;
+	//sc->typec_cap.vconn_set = sc27xx_typec_vconn_set;
 	sc->typec_cap.revision = USB_TYPEC_REV_1_2;
 	sc->typec_cap.prefer_role = TYPEC_NO_PREFERRED_ROLE;
 	sc->port = typec_register_port(&pdev->dev, &sc->typec_cap);
@@ -592,19 +595,6 @@ static struct platform_driver sc27xx_typec_driver = {
 		.of_match_table = typec_sprd_match,
 	},
 };
-
-static int __init sc27xx_typec_init(void)
-{
-	return platform_driver_register(&sc27xx_typec_driver);
-}
-
-static void __exit sc27xx_typec_exit(void)
-{
-	platform_driver_unregister(&sc27xx_typec_driver);
-}
-
-module_init(sc27xx_typec_init);
-module_exit(sc27xx_typec_exit);
-
+module_platform_driver(sc27xx_typec_driver);
 MODULE_LICENSE("GPL v2");
 

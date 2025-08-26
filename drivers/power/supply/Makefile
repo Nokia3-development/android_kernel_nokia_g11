@@ -1,23 +1,20 @@
 # SPDX-License-Identifier: GPL-2.0
 subdir-ccflags-$(CONFIG_POWER_SUPPLY_DEBUG) := -DDEBUG
 
-#+chk2828, fangduozhu, add, 20210908, for ato charging capacity control
-ifeq ($(WT_COMPILE_FACTORY_VERSION),yes)
-    ccflags-y += -DWT_COMPILE_FACTORY_VERSION
-endif
-#-chk2828, fangduozhu, add, 20210908, for ato charging capacity control
-#zhiqing.liu add, SCP-3679, RDX version charging capacity control, 20220105 begin
-ifeq ($(HMD_DEMO_SUPPORT),true)
-    ccflags-y += -DHMD_DEMO_SUPPORT
-endif
-#zhiqing.liu add, SCP-3679, RDX version charging capacity control, 20220105 end
-#GCOV_PROFILE := $(CONFIG_SPRD_SUPPLY_GCOV)
-
+## zhiqing.liu modify, charger driver customization, 2021.12.20 begin
+ifeq ($(TARGET_PRODUCT),ShadowcatPlus_Natv_test)
+power_supply-y				:= ShadowcatPlus/
+power_supply-$(CONFIG_SYSFS)		+= ShadowcatPlus/
+power_supply-$(CONFIG_LEDS_TRIGGERS)	+= ShadowcatPlus/
+else
 power_supply-y				:= power_supply_core.o
 power_supply-$(CONFIG_SYSFS)		+= power_supply_sysfs.o
 power_supply-$(CONFIG_LEDS_TRIGGERS)	+= power_supply_leds.o
 
 obj-$(CONFIG_POWER_SUPPLY)	+= power_supply.o
+endif
+## zhiqing.liu modify, charger driver customization, 2021.12.20 end
+obj-$(CONFIG_POWER_SUPPLY_HWMON) += power_supply_hwmon.o
 obj-$(CONFIG_GENERIC_ADC_BATTERY)	+= generic-adc-battery.o
 
 obj-$(CONFIG_PDA_POWER)		+= pda_power.o
@@ -30,6 +27,7 @@ obj-$(CONFIG_WM8350_POWER)	+= wm8350_power.o
 obj-$(CONFIG_TEST_POWER)	+= test_power.o
 
 obj-$(CONFIG_BATTERY_88PM860X)	+= 88pm860x_battery.o
+obj-$(CONFIG_CHARGER_ADP5061)	+= adp5061.o
 obj-$(CONFIG_BATTERY_ACT8945A)	+= act8945a_charger.o
 obj-$(CONFIG_BATTERY_AXP20X)	+= axp20x_battery.o
 obj-$(CONFIG_CHARGER_AXP20X)	+= axp20x_ac_power.o
@@ -45,10 +43,12 @@ obj-$(CONFIG_BATTERY_PMU)	+= pmu_battery.o
 obj-$(CONFIG_BATTERY_OLPC)	+= olpc_battery.o
 obj-$(CONFIG_BATTERY_TOSA)	+= tosa_battery.o
 obj-$(CONFIG_BATTERY_COLLIE)	+= collie_battery.o
+obj-$(CONFIG_BATTERY_INGENIC)	+= ingenic-battery.o
 obj-$(CONFIG_BATTERY_IPAQ_MICRO) += ipaq_micro_battery.o
 obj-$(CONFIG_BATTERY_WM97XX)	+= wm97xx_battery.o
 obj-$(CONFIG_BATTERY_SBS)	+= sbs-battery.o
 obj-$(CONFIG_CHARGER_SBS)	+= sbs-charger.o
+obj-$(CONFIG_MANAGER_SBS)	+= sbs-manager.o
 obj-$(CONFIG_BATTERY_BQ27XXX)	+= bq27xxx_battery.o
 obj-$(CONFIG_BATTERY_BQ27XXX_I2C) += bq27xxx_battery_i2c.o
 obj-$(CONFIG_BATTERY_BQ27XXX_HDQ) += bq27xxx_battery_hdq.o
@@ -66,7 +66,6 @@ obj-$(CONFIG_BATTERY_S3C_ADC)	+= s3c_adc_battery.o
 obj-$(CONFIG_BATTERY_TWL4030_MADC)	+= twl4030_madc_battery.o
 obj-$(CONFIG_CHARGER_88PM860X)	+= 88pm860x_charger.o
 obj-$(CONFIG_CHARGER_PCF50633)	+= pcf50633-charger.o
-obj-$(CONFIG_BATTERY_JZ4740)	+= jz4740-battery.o
 obj-$(CONFIG_BATTERY_RX51)	+= rx51_battery.o
 obj-$(CONFIG_AB8500_BM)		+= ab8500_bmdata.o ab8500_charger.o ab8500_fg.o ab8500_btemp.o abx500_chargalg.o pm2301_charger.o
 obj-$(CONFIG_CHARGER_CPCAP)	+= cpcap-charger.o
@@ -76,43 +75,67 @@ obj-$(CONFIG_CHARGER_TWL4030)	+= twl4030_charger.o
 obj-$(CONFIG_CHARGER_LP8727)	+= lp8727_charger.o
 obj-$(CONFIG_CHARGER_LP8788)	+= lp8788-charger.o
 obj-$(CONFIG_CHARGER_GPIO)	+= gpio-charger.o
+## zhiqing.liu modify, charger driver customization, 2021.12.20 begin
+ifeq ($(TARGET_PRODUCT),ShadowcatPlus_Natv_test)
+## obj-$(CONFIG_CHARGER_MANAGER)	+= sprd_vote.o
+obj-$(CONFIG_CHARGER_MANAGER)	+= ShadowcatPlus/
+else
 obj-$(CONFIG_CHARGER_MANAGER)	+= charger-manager.o sprd_vote.o
-GCOV_PROFILE_charger-manager.o := $(CONFIG_SPRD_SUPPLY_GCOV)
-obj-$(CONFIG_CHARGER_LTC3651)	+= ltc3651-charger.o
+endif
+## zhiqing.liu modify, charger driver customization, 2021.12.20 end
+obj-$(CONFIG_CHARGER_LT3651)	+= lt3651-charger.o
 obj-$(CONFIG_CHARGER_MAX14577)	+= max14577_charger.o
 obj-$(CONFIG_CHARGER_DETECTOR_MAX14656)	+= max14656_charger_detector.o
+obj-$(CONFIG_CHARGER_MAX77650)	+= max77650-charger.o
 obj-$(CONFIG_CHARGER_MAX77693)	+= max77693_charger.o
 obj-$(CONFIG_CHARGER_MAX8997)	+= max8997_charger.o
 obj-$(CONFIG_CHARGER_MAX8998)	+= max8998_charger.o
 obj-$(CONFIG_CHARGER_QCOM_SMBB)	+= qcom_smbb.o
 obj-$(CONFIG_CHARGER_BQ2415X)	+= bq2415x_charger.o
-obj-$(CONFIG_CHARGER_AW32257)	+= aw32257_charger.o
 obj-$(CONFIG_CHARGER_BQ24190)	+= bq24190_charger.o
 obj-$(CONFIG_CHARGER_BQ24257)	+= bq24257_charger.o
 obj-$(CONFIG_CHARGER_BQ24735)	+= bq24735-charger.o
+## zhiqing.liu modify, charger driver customization, 2021.12.20 begin
+ifeq ($(TARGET_PRODUCT),ShadowcatPlus_Natv_test)
+obj-$(CONFIG_CHARGER_BQ25890)	+= ShadowcatPlus/
+else
 obj-$(CONFIG_CHARGER_BQ25890)	+= bq25890_charger.o
+endif
+## zhiqing.liu modify, charger driver customization, 2021.12.20 end
+obj-$(CONFIG_CHARGER_BQ25910)	+= bq25910_charger.o
 obj-$(CONFIG_CHARGER_SMB347)	+= smb347-charger.o
 obj-$(CONFIG_CHARGER_TPS65090)	+= tps65090-charger.o
 obj-$(CONFIG_CHARGER_TPS65217)	+= tps65217_charger.o
 obj-$(CONFIG_AXP288_FUEL_GAUGE) += axp288_fuel_gauge.o
 obj-$(CONFIG_AXP288_CHARGER)	+= axp288_charger.o
 obj-$(CONFIG_CHARGER_CROS_USBPD)	+= cros_usbpd-charger.o
-obj-$(CONFIG_CHARGER_SC2731)	+= sc2731_charger.o
-obj-$(CONFIG_FUEL_GAUGE_SC27XX)	+= sc27xx_fuel_gauge.o
-GCOV_PROFILE_sc27xx_fuel_gauge.o := $(CONFIG_SPRD_SUPPLY_GCOV)
-obj-$(CONFIG_CHARGER_SC2703)	+= sc2703-charger.o
-GCOV_PROFILE_sc2703-charger.o := $(CONFIG_SPRD_SUPPLY_GCOV)
-obj-$(CONFIG_CHARGER_FAN54015)	+= fan54015-charger.o
-GCOV_PROFILE_fan54015-charger.o := $(CONFIG_SPRD_SUPPLY_GCOV)
-obj-$(CONFIG_CHARGER_ETA6937)	+= eta6937-charger.o
-GCOV_PROFILE_eta6937-charger.o := $(CONFIG_SPRD_SUPPLY_GCOV)
-obj-$(CONFIG_CHARGER_BQ2560X)	+= bq2560x-charger.o
-obj-$(CONFIG_CHARGER_BQ25890)	+= bq25890_charger.o
-obj-$(CONFIG_CHARGER_BQ2597X)	+= bq2597x-charger.o
+obj-$(CONFIG_CHARGER_AW32257)	+= aw32257_charger.o
 obj-$(CONFIG_CHARGER_SC2720)	+= sc2720_charger.o
 obj-$(CONFIG_CHARGER_SC2721)	+= sc2721_charger.o
+obj-$(CONFIG_CHARGER_SC2731)	+= sc2731_charger.o
+## zhiqing.liu modify, charger driver customization, 2021.12.20 begin
+ifeq ($(TARGET_PRODUCT),ShadowcatPlus_Natv_test)
+obj-$(CONFIG_FUEL_GAUGE_SC27XX)	+= ShadowcatPlus/
+# obj-$(CONFIG_FUEL_GAUGE_SC27XX) += sprd_battery_info.o
+else
+obj-$(CONFIG_FUEL_GAUGE_SC27XX)	+= sc27xx_fuel_gauge.o sprd_battery_info.o
+endif
+## zhiqing.liu modify, charger driver customization, 2021.12.20 end
+obj-$(CONFIG_CHARGER_FAN54015)	+= fan54015-charger.o
+obj-$(CONFIG_CHARGER_UCS1002)	+= ucs1002_power.o
+obj-$(CONFIG_CHARGER_BD70528)	+= bd70528-charger.o
+obj-$(CONFIG_CHARGER_WILCO)	+= wilco-charger.o
+obj-$(CONFIG_CHARGER_BQ2560X)	+= bq2560x-charger.o
+obj-$(CONFIG_CHARGER_BQ2597X)	+= bq2597x-charger.o
+## zhiqing.liu modify, charger driver customization, 2021.12.20 begin
+ifeq ($(TARGET_PRODUCT),ShadowcatPlus_Natv_test)
+obj-$(CONFIG_FAST_CHARGER_SC2730) += ShadowcatPlus/
+else
+obj-$(CONFIG_FAST_CHARGER_SC2730) += sc2730_fast_charger.o
+endif
+## zhiqing.liu modify, charger driver customization, 2021.12.20 end
+obj-$(CONFIG_WIRELESS_CHARGE_PUMPS_CONVERTER_HL1506)	+= hl1506_charger.o
 obj-$(CONFIG_WIRELESS_CHARGER_NU1619)	+= nu1619_wireless_charger.o
 obj-$(CONFIG_WIRELESS_CHARGER_SY65153)	+= sy65153_wireless_charger.o
-obj-$(CONFIG_WIRELESS_CHARGE_PUMPS_CONVERTER_HL1506)	+= hl1506_charger.o
-obj-$(CONFIG_FAST_CHARGER_SC2730) += sc2730_fast_charger.o
-obj-$(CONFIG_CHARGER_BQ25910) += bq25910_charger.o
+obj-$(CONFIG_CHARGER_ETA6937)	+= eta6937-charger.o
+

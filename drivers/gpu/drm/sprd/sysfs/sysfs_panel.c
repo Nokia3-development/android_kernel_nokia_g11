@@ -1,29 +1,24 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 Spreadtrum Communications Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (C) 2020 Unisoc Inc.
  */
 
+#include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc_helper.h>
+#include <drm/drm_probe_helper.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_fdt.h>
+#include <linux/slab.h>
 #include <linux/sysfs.h>
 #include <linux/pm_runtime.h>
 #include <linux/platform_device.h>
 #include <video/videomode.h>
 
 #include "disp_lib.h"
-#include "sprd_panel.h"
 #include "sprd_dsi.h"
+#include "sprd_dsi_panel.h"
 #include "sysfs_display.h"
 
 #define host_to_dsi(host) \
@@ -103,8 +98,15 @@ static ssize_t hporch_show(struct device *dev,
 	struct sprd_panel *panel = dev_get_drvdata(dev);
 	struct videomode vm;
 	int ret;
+/*Added by qinjinke@sagereal.com for MGK-808 refresh rate Begin 2022-05-03*/
+/* Modify by ma_dan@hoperun.com for SCP-5004 refresh rate 2022-05-07 */
+#if defined(TARGET_PRODUCT_MGK) || defined(TARGET_PRODUCT_SCP) || defined(TARGET_PRODUCT_SCT)
 
+	drm_display_mode_to_videomode(&panel->info.curr_mode, &vm);
+#else
 	drm_display_mode_to_videomode(&panel->info.mode, &vm);
+#endif
+/*Added by qinjinke@sagereal.com for MGK-808 refresh rate End 2022-05-03*/
 	ret = snprintf(buf, PAGE_SIZE, "hfp=%u hbp=%u hsync=%u\n",
 				   vm.hfront_porch,
 				   vm.hback_porch,
@@ -158,8 +160,15 @@ static ssize_t vporch_show(struct device *dev,
 	struct sprd_panel *panel = dev_get_drvdata(dev);
 	struct videomode vm;
 	int ret;
+	/*Added by qinjinke@sagereal.com for MGK-808 refresh rate Begin 2022-05-03*/
+	/* Modify by ma_dan@hoperun.com for SCP-5004 refresh rate 2022-05-07 */
+#if defined(TARGET_PRODUCT_MGK) || defined(TARGET_PRODUCT_SCP) || defined(TARGET_PRODUCT_SCT)
 
+	drm_display_mode_to_videomode(&panel->info.curr_mode, &vm);
+#else
 	drm_display_mode_to_videomode(&panel->info.mode, &vm);
+#endif
+	/*Added by qinjinke@sagereal.com for MGK-808 refresh rate End 2022-05-03*/	
 	ret = snprintf(buf, PAGE_SIZE, "vfp=%u vbp=%u vsync=%u\n",
 				   vm.vfront_porch,
 				   vm.vback_porch,
@@ -372,10 +381,10 @@ static ssize_t suspend_store(struct device *dev,
 	struct mipi_dsi_host *host = panel->slave->host;
 	struct sprd_dsi *dsi = host_to_dsi(host);
 
-	if (dsi->ctx.is_inited && panel->is_enabled) {
+	if (dsi->ctx.enabled && panel->enabled) {
 		drm_panel_disable(&panel->base);
 		drm_panel_unprepare(&panel->base);
-		panel->is_enabled = false;
+		panel->enabled = false;
 	}
 
 	return count;
@@ -390,54 +399,15 @@ static ssize_t resume_store(struct device *dev,
 	struct mipi_dsi_host *host = panel->slave->host;
 	struct sprd_dsi *dsi = host_to_dsi(host);
 
-	if (dsi->ctx.is_inited && (!panel->is_enabled)) {
+	if (dsi->ctx.enabled && (!panel->enabled)) {
 		drm_panel_prepare(&panel->base);
 		drm_panel_enable(&panel->base);
-		panel->is_enabled = true;
+		panel->enabled = true;
 	}
 
 	return count;
 }
 static DEVICE_ATTR_WO(resume);
-
-static ssize_t load_lcddtb_store(struct device *dev,
-				struct device_attribute *attr,
-				const char *buf, size_t count)
-{
-	struct sprd_panel *panel = dev_get_drvdata(dev);
-	struct device_node *root = NULL;
-	struct device_node *lcdnp = NULL;
-	int enable;
-	static void *blob;
-	int ret;
-
-	if (kstrtoint(buf, 10, &enable)) {
-		pr_err("invalid input for panelinfo enable\n");
-		return -EINVAL;
-	}
-
-	if (enable > 0) {
-		if (blob) {
-			kfree(blob);
-			blob = NULL;
-		}
-		ret = load_dtb_to_mem("/data/lcd.dtb", &blob);
-		if (ret < 0) {
-			pr_err("parse lcd dtb file failed\n");
-			return -EINVAL;
-		}
-		of_fdt_unflatten_tree(blob, NULL, &root);
-		lcdnp = root->child->child;
-		if (lcdnp) {
-			pr_err("lcd device node name %s\n", lcdnp->full_name);
-			sprd_panel_parse_lcddtb(lcdnp, panel);
-		}
-	}
-
-	return count;
-
-}
-static DEVICE_ATTR_WO(load_lcddtb);
 
 static struct attribute *panel_attrs[] = {
 	&dev_attr_name.attr,
@@ -454,7 +424,6 @@ static struct attribute *panel_attrs[] = {
 	&dev_attr_esd_check_value.attr,
 	&dev_attr_suspend.attr,
 	&dev_attr_resume.attr,
-	&dev_attr_load_lcddtb.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(panel);
@@ -465,7 +434,7 @@ int sprd_panel_sysfs_init(struct device *dev)
 
 	rc = sysfs_create_groups(&(dev->kobj), panel_groups);
 	if (rc)
-		pr_err("create panel attr node failed, rc=%d\n", rc);
+		pr_err("create panel attr node failed, rc=%d.\n", rc);
 
 	return rc;
 }

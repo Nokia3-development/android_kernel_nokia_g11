@@ -214,16 +214,14 @@ static int dpu_clk_init(struct dpu_context *ctx)
 	u32 dpi_src_val;
 	struct clk *clk_src;
 	struct dpu_clk_context *clk_ctx = &dpu_clk_ctx;
-//Modify by pengzhenhua1@wingtech.com for SCT-702,wt dynamic frame rate adjustment bringup on(2021.10.19) begin
-       struct sprd_dpu *dpu = (struct sprd_dpu *)container_of(ctx,
-                               struct sprd_dpu, ctx);
-//Modify by pengzhenhua1@wingtech.com for SCT-702,wt dynamic frame rate adjustment bringup on(2021.10.19) end
+	struct sprd_dpu *dpu = (struct sprd_dpu *)container_of(ctx,
+				struct sprd_dpu, ctx);
+
 	dpu_core_val = calc_dpu_core_clk();
 
-	//if (ctx->dpi_clk_div) {
-	if (dpu->dsi->ctx.dpi_clk_div) {       //Modify by pengzhenhua1@wingtech.com for SCT-702,wt dynamic frame rate adjustment bringup on(2021.10.19)
+	if (dpu->dsi->ctx.dpi_clk_div) {
 		pr_info("DPU_CORE_CLK = %u, DPI_CLK_DIV = %d\n",
-				dpu_core_val, dpu->dsi->ctx.dpi_clk_div);	//Modify by pengzhenhua1@wingtech.com for SCT-702,wt dynamic frame rate adjustment bringup on(2021.10.19)
+				dpu_core_val, dpu->dsi->ctx.dpi_clk_div);
 	} else {
 		dpi_src_val = calc_dpi_clk_src(ctx->vm.pixelclock);
 		pr_info("DPU_CORE_CLK = %u, DPI_CLK_SRC = %u\n",
@@ -236,10 +234,8 @@ static int dpu_clk_init(struct dpu_context *ctx)
 	if (ret)
 		pr_warn("set dpu core clk source failed\n");
 
-//	if (ctx->dpi_clk_div) {
-//		clk_src = div_to_clk(clk_ctx, ctx->dpi_clk_div);
-	if (dpu->dsi->ctx.dpi_clk_div) {        //Modify by pengzhenhua1@wingtech.com for SCT-702,wt dynamic frame rate adjustment bringup on(2021.10.19)
-                clk_src = div_to_clk(clk_ctx, dpu->dsi->ctx.dpi_clk_div);
+	if (dpu->dsi->ctx.dpi_clk_div) {
+		clk_src = div_to_clk(clk_ctx, dpu->dsi->ctx.dpi_clk_div);
 		ret = clk_set_parent(clk_ctx->clk_dpu_dpi, clk_src);
 		if (ret)
 			pr_warn("set dpi clk source failed\n");
@@ -295,34 +291,25 @@ static int dpu_glb_parse_dt(struct dpu_context *ctx,
 				struct device_node *np)
 {
 	unsigned int syscon_args[2];
-	int ret;
 
-	disp_reset.regmap = syscon_regmap_lookup_by_name(np, "disp_reset");
+	disp_reset.regmap = syscon_regmap_lookup_by_phandle_args(np,
+			"disp-reset-syscon", 2, syscon_args);
 	if (IS_ERR(disp_reset.regmap)) {
-		pr_warn("failed to map dpu glb reg: reset\n");
+		pr_warn("failed to get disp_reset syscon\n");
 		return PTR_ERR(disp_reset.regmap);
-	}
-
-	ret = syscon_get_args_by_name(np, "disp_reset", 2, syscon_args);
-	if (ret == 2) {
+	} else {
 		disp_reset.enable_reg = syscon_args[0];
 		disp_reset.mask_bit = syscon_args[1];
-	} else {
-		pr_warn("failed to parse dpu glb reg: reset\n");
 	}
 
-	mmu_reset.regmap = syscon_regmap_lookup_by_name(np, "iommu_reset");
+	mmu_reset.regmap = syscon_regmap_lookup_by_phandle_args(np,
+			"iommu-reset-syscon", 2, syscon_args);
 	if (IS_ERR(mmu_reset.regmap)) {
 		pr_warn("failed to map mmu glb reg: reset\n");
 		return PTR_ERR(mmu_reset.regmap);
-	}
-
-	ret = syscon_get_args_by_name(np, "iommu_reset", 2, syscon_args);
-	if (ret == 2) {
+	} else {
 		mmu_reset.enable_reg = syscon_args[0];
 		mmu_reset.mask_bit = syscon_args[1];
-	} else {
-		pr_warn("failed to parse mmu glb reg: reset\n");
 	}
 
 	clk_ap_ahb_disp_eb =
@@ -383,39 +370,20 @@ static void dpu_power_domain(struct dpu_context *ctx, int enable)
 
 }
 
-static struct dpu_clk_ops dpu_clk_ops = {
+const struct dpu_clk_ops qogirl6_dpu_clk_ops = {
 	.parse_dt = dpu_clk_parse_dt,
 	.init = dpu_clk_init,
 	.enable = dpu_clk_enable,
 	.disable = dpu_clk_disable,
 };
 
-static struct dpu_glb_ops dpu_glb_ops = {
+const struct dpu_glb_ops qogirl6_dpu_glb_ops = {
 	.parse_dt = dpu_glb_parse_dt,
 	.reset = dpu_reset,
 	.enable = dpu_glb_enable,
 	.disable = dpu_glb_disable,
 	.power = dpu_power_domain,
 };
-
-static struct ops_entry clk_entry = {
-	.ver = "qogirl6",
-	.ops = &dpu_clk_ops,
-};
-
-static struct ops_entry glb_entry = {
-	.ver = "qogirl6",
-	.ops = &dpu_glb_ops,
-};
-
-static int __init dpu_glb_register(void)
-{
-	dpu_clk_ops_register(&clk_entry);
-	dpu_glb_ops_register(&glb_entry);
-	return 0;
-}
-
-subsys_initcall(dpu_glb_register);
 
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Pony.Wu@unisoc.com");

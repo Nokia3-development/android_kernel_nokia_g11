@@ -101,7 +101,7 @@ static int emmc_set_wp(struct mmc_card *card)
 	if (err)
 		return err;
 
-	wp_grp_size = card->wp_grp_size;
+	wp_grp_size = card->android_kabi_reserved1;
 	pr_info("card->wp_grp_size: 0x%llx\n", wp_grp_size);
 
 	get_fixed_wp_params(&start, size, wp_grp_size, &cnt);
@@ -150,7 +150,7 @@ static int emmc_check_wp_fn(struct mmc_card *card)
 
 	ret = of_property_read_string(np, "sprd,wp_fn", &name);
 	if (ret) {
-		pr_notice("%s: can not read the property of sprd wp_fn\n");
+		pr_notice("%s: can not read the property of sprd wp_fn\n",__func__);
 		return ret;
 	}
 

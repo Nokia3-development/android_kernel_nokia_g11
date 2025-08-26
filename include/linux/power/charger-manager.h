@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2011 Samsung Electronics Co., Ltd.
  * MyungJoo.Ham <myungjoo.ham@samsung.com>
@@ -7,9 +8,6 @@
  * monitor charging even in the context of suspend-to-RAM with
  * an interface combining the chargers.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
 **/
 
 #ifndef _CHARGER_MANAGER_H
@@ -18,7 +16,15 @@
 #include <linux/alarmtimer.h>
 #include <linux/extcon.h>
 #include <linux/power_supply.h>
+#include <linux/power/sprd_battery_info.h>
 #include <linux/power/sprd_vote.h>
+
+enum cm_charge_info_cmd {
+	CM_CHARGE_INFO_CHARGE_LIMIT = BIT(0),
+	CM_CHARGE_INFO_INPUT_LIMIT = BIT(1),
+	CM_CHARGE_INFO_THERMAL_LIMIT = BIT(2),
+	CM_CHARGE_INFO_JEITA_LIMIT = BIT(3),
+};
 
 enum power_supply_charger_type {
 	POWER_SUPPLY_CHARGER_TYPE_UNKNOWN = 0,
@@ -35,13 +41,6 @@ enum power_supply_charger_type {
 	POWER_SUPPLY_USB_CHARGER_TYPE_SFCP_2P0,		/* SFCP2.0 Port*/
 	POWER_SUPPLY_WIRELESS_CHARGER_TYPE_BPP,		/* BPP wireless method */
 	POWER_SUPPLY_WIRELESS_CHARGER_TYPE_EPP,		/* EPP wiresess method */
-};
-
-enum cm_charge_info_cmd {
-	CM_CHARGE_INFO_CHARGE_LIMIT = BIT(0),
-	CM_CHARGE_INFO_INPUT_LIMIT = BIT(1),
-	CM_CHARGE_INFO_THERMAL_LIMIT = BIT(2),
-	CM_CHARGE_INFO_JEITA_LIMIT = BIT(3),
 };
 
 enum data_source {
@@ -73,18 +72,6 @@ enum cm_event_types {
 	CM_EVENT_OTHERS,
 };
 
-enum cm_jeita_types {
-	CM_JEITA_DCP = 0,
-	CM_JEITA_SDP,
-	CM_JEITA_CDP,
-	CM_JEITA_UNKNOWN,
-	CM_JEITA_FCHG,
-	CM_JEITA_FLASH,
-	CM_JEITA_WL_BPP,
-	CM_JEITA_WL_EPP,
-	CM_JEITA_MAX,
-};
-
 enum cm_capacity_cmd {
 	CM_CAPACITY = 0,
 	CM_BOOT_CAPACITY,
@@ -111,36 +98,59 @@ enum cm_charge_status {
 	CM_CHARGE_VOLTAGE_ABNORMAL = BIT(2),
 	CM_CHARGE_HEALTH_ABNORMAL = BIT(3),
 	CM_CHARGE_DURATION_ABNORMAL = BIT(4),
-	CM_CHARGE_CV_ABNORMAL = BIT(5),
 };
 
 enum cm_fast_charge_command {
 	CM_FAST_CHARGE_NORMAL_CMD = 1,
-	CM_FAST_CHARGE_ENABLE_CMD,
-	CM_FAST_CHARGE_DISABLE_CMD,
+	CM_FAST_CHARGE_OVP_ENABLE_CMD,
+	CM_FAST_CHARGE_OVP_DISABLE_CMD,
 	CM_PPS_CHARGE_ENABLE_CMD,
 	CM_PPS_CHARGE_DISABLE_CMD,
 	CM_POWER_PATH_ENABLE_CMD,
 	CM_POWER_PATH_DISABLE_CMD,
 };
 
-enum present_command {
+enum cm_present_command {
 	CM_USB_PRESENT_CMD,
 	CM_BATTERY_PRESENT_CMD,
 	CM_VBUS_PRESENT_CMD,
 };
 
-enum temperature_command {
+enum cm_temperature_command {
 	CMD_BATT_TEMP_CMD,
 	CM_BUS_TEMP_CMD,
 	CM_DIE_TEMP_CMD,
 };
 
-enum health_command {
+enum cm_health_command {
 	CM_FAULT_HEALTH_CMD,
 	CM_ALARM_HEALTH_CMD,
 	CM_BUS_ERR_HEALTH_CMD,
 };
+
+enum cm_current_now_command {
+	CM_IBAT_CURRENT_NOW_CMD,
+	CM_IBUS_CURRENT_NOW_CMD,
+};
+
+enum power_supply_wireless_type {
+	POWER_SUPPLY_WIRELESS_TYPE_UNKNOWN = 0x20,
+	POWER_SUPPLY_WIRELESS_TYPE_BPP,		/* Standard wireless bpp mode */
+	POWER_SUPPLY_WIRELESS_TYPE_EPP,		/* Standard wireless epp mode */
+};
+
+enum power_supply_charge_type {
+	USB_CHARGE_TYPE_NORMAL = 0,		/* Charging Power <= 10W*/
+	USB_CHARGE_TYPE_FAST,			/* 10W < Charging Power <= 20W */
+	USB_CHARGE_TYPE_FLASH,			/* 20W < Charging Power <= 30W */
+	USB_CHARGE_TYPE_TURBE,			/* 30W < Charging Power <= 50W */
+	USB_CHARGE_TYPE_SUPER,			/* Charging Power > 50W */
+	WIRELESS_CHARGE_TYPE_NORMAL,
+	WIRELESS_CHARGE_TYPE_FAST,
+	WIRELESS_CHARGE_TYPE_FLASH,
+	CHARGE_MAX,
+};
+
 enum cm_charger_fault_status_mask {
 	CM_CHARGER_BAT_OVP_FAULT_MASK = BIT(0),
 	CM_CHARGER_BAT_OCP_FAULT_MASK = BIT(1),
@@ -193,7 +203,6 @@ struct ac_data {
 	struct power_supply_desc psd;
 	struct power_supply *psy;
 	int AC_ONLINE;
-	int is_fast_charger;
 };
 
 struct usb_data {
@@ -235,8 +244,8 @@ struct charger_cable {
 	 * Set min/max current of regulator to protect over-current issue
 	 * according to a kind of charger cable when cable is attached.
 	 */
-	int min_uA;
-	int max_uA;
+	u32 min_uA;
+	u32 max_uA;
 
 	struct charger_manager *cm;
 };
@@ -277,7 +286,7 @@ struct charger_regulator {
 	int num_cables;
 	int cp_id;
 
-	struct attribute_group attr_g;
+	struct attribute_group attr_grp;
 	struct device_attribute attr_name;
 	struct device_attribute attr_state;
 	struct device_attribute attr_stop_charge;
@@ -287,16 +296,19 @@ struct charger_regulator {
 	struct device_attribute attr_charge_pump_present;
 	struct device_attribute attr_charge_pump_current;
 	struct device_attribute attr_enable_power_path;
+	/* Added by qinjinke@sagereal.com for MGK-852 charger test percentage Begin 2022-03-31 */
+	//Modify by xu_shengjie@hoperun.com for SCP-3515 setting maximum charge percentage 2022-05-12 begin
+	//#ifdef TARGET_PRODUCT_MGK
+	#if defined(TARGET_PRODUCT_MGK) || defined(TARGET_PRODUCT_SCP) || defined(TARGET_PRODUCT_SCT)
+	//Modify by xu_shengjie@hoperun.com for SCP-3515 setting maximum charge percentage 2022-05-12 end
+	struct device_attribute attr_hmd_charge_percentage;
+	struct attribute *attrs[11];
+	#else
 	struct attribute *attrs[10];
+	#endif
+	/* Added by qinjinke@sagereal.com for MGK-852 charger test percentage End 2022-03-31 */
 
 	struct charger_manager *cm;
-};
-
-struct charger_jeita_table {
-	int temp;
-	int recovery_temp;
-	int current_ua;
-	int term_volt;
 };
 
 /*
@@ -445,6 +457,25 @@ struct cm_charge_pump_status {
 	struct cm_alarm_status  alm;
 };
 
+struct cm_charge_current {
+	int sdp_limit;
+	int sdp_cur;
+	int dcp_limit;
+	int dcp_cur;
+	int cdp_limit;
+	int cdp_cur;
+	int unknown_limit;
+	int unknown_cur;
+	int fchg_limit;
+	int fchg_cur;
+	int flash_limit;
+	int flash_cur;
+	int wl_bpp_cur;
+	int wl_bpp_limit;
+	int wl_epp_cur;
+	int wl_epp_limit;
+};
+
 /**
  * struct cm_charge_pump_status
  * @adapter_default_charge_vol: record default charge voltage for
@@ -480,6 +511,7 @@ struct cm_thermal_info {
  * @fullbatt_full_capacity: full capacity measure
  *	If full capacity of battery >= fullbatt_full_capacity,
  *	it is assumed to be full.
+ * @constant_charge_voltage_max_uv: max battery voltage
  * @polling_interval_ms: interval in millisecond at which
  *	charger manager will monitor battery health
  * @battery_present:
@@ -596,6 +628,8 @@ struct charger_desc {
 	unsigned int first_fullbatt_uA;
 	unsigned int fullbatt_soc;
 	unsigned int fullbatt_full_capacity;
+	unsigned int constant_charge_voltage_max_uv;
+	unsigned int fullbatt_voltage_offset_uv;
 
 	enum data_source battery_present;
 
@@ -607,6 +641,7 @@ struct charger_desc {
 
 	int num_charger_regulators;
 	struct charger_regulator *charger_regulators;
+	const struct attribute_group **sysfs_groups;
 
 	const char *psy_fuel_gauge;
 
@@ -615,8 +650,6 @@ struct charger_desc {
 	int temp_min;
 	int temp_max;
 	int temp_diff;
-//SCT-702, fangduozhu.wt, add, battery bringup
-	int temp_overheat_shutdown;
 
 	int cap;
 	bool measure_battery_temp;
@@ -661,9 +694,12 @@ struct charger_desc {
 	int charge_limit_cur;
 	int input_limit_cur;
 
-	struct charger_jeita_table *jeita_tab;
+	int thm_adjust_cur;
+
+	struct sprd_battery_jeita_table *jeita_tab;
+	u32 jeita_size[SPRD_BATTERY_JEITA_MAX];
 	u32 jeita_tab_size;
-	struct charger_jeita_table *jeita_tab_array[CM_JEITA_MAX];
+	struct sprd_battery_jeita_table *jeita_tab_array[SPRD_BATTERY_JEITA_MAX];
 
 	bool jeita_disabled;
 	int force_jeita_status;
@@ -674,12 +710,15 @@ struct charger_desc {
 	int cap_table_len;
 	struct power_supply_battery_ocv_table *cap_table;
 	struct cap_remap_table *cap_remap_table;
-	struct power_supply_charge_current cur;
-	u32 cap_remap_table_len;
+	int cap_remap_table_len;
 	int cap_remap_total_cnt;
 	int cap_remap_full_percent;
 	bool is_fast_charge;
 	bool enable_fast_charge;
+	bool fixed_fchg_running;
+	bool wait_vbus_stable;
+	bool check_fixed_fchg_threshold;
+	u32 fast_charge_enable_count;
 	u32 fast_charge_disable_count;
 	u32 double_ic_total_limit_current;
 	u32 cp_nums;
@@ -693,12 +732,15 @@ struct charger_desc {
 	struct cm_charge_pump_status cp;
 	struct cm_ir_compensation ir_comp;
 
+	struct cm_charge_current cur;
+
 	bool wl_charge_en;
 	bool usb_charge_en;
 
 	struct cm_thermal_info thm_info;
 
 	struct mutex charger_type_mtx;
+	struct mutex charge_info_mtx;
 };
 
 #define PSY_NAME_MAX	30
@@ -748,6 +790,7 @@ struct charger_manager {
 	struct delayed_work cap_update_work;
 	struct delayed_work uvlo_work;
 	struct delayed_work ir_compensation_work;
+	struct delayed_work fixed_fchg_work;
 	struct delayed_work cp_work;
 	int emergency_stop;
 
@@ -760,13 +803,11 @@ struct charger_manager {
 	u32 charging_status;
 	int battery_status;
 
-	struct wakeup_source charge_ws;
+	struct wakeup_source *charge_ws;
 	struct sprd_vote *cm_charge_vote;
-//SCT-702, fangduozhu.wt, add, start/stop charge attr
-	bool force_stop_charge;
 };
 
-#ifdef CONFIG_CHARGER_MANAGER
+#if IS_ENABLED(CONFIG_CHARGER_MANAGER)
 extern void cm_notify_event(struct power_supply *psy,
 				enum cm_event_types type, char *msg);
 #else
